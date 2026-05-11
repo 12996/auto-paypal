@@ -94,10 +94,9 @@ async function initializeImapAuth() {
     return forceRefreshImapToken();
 }
 
-// 禁用自动初始化 - 使用 OAuth2 直接取件，不需要管理后台认证
-// initializeImapAuth().catch((error) => {
-//     console.error(`❌ [IMAP] 启动预刷新失败: ${error.message}`);
-// });
+initializeImapAuth().catch((error) => {
+    console.error(`❌ [IMAP] 启动预刷新失败: ${error.message}`);
+});
 
 module.exports = {
     initializeImapAuth,

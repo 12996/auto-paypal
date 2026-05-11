@@ -1,5 +1,3 @@
-require('dotenv').config({ quiet: true });
-
 const express = require('express');
 const { spawn, execFileSync } = require('child_process');
 const path = require('path');
@@ -12,7 +10,6 @@ const store = require('./mysql-store');
 const { listRecentEmailsForAdmin } = require('./pool-email-imap');
 const runtimeLog = require('./runtime-log');
 const { initializeImapAuth, getImapAuthHeaders } = require('./imap-auth');
-const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -304,9 +301,6 @@ async function syncAccessDeactivatedProductStatuses(force = false) {
 }
 
 function scheduleAccessDeactivatedSync(delayMs = ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS) {
-    // 禁用远程同步定时任务
-    return;
-    /*
     if (accessDeactivatedSyncTimer) {
         clearTimeout(accessDeactivatedSyncTimer);
         accessDeactivatedSyncTimer = null;
@@ -322,7 +316,6 @@ function scheduleAccessDeactivatedSync(delayMs = ACCESS_DEACTIVATED_SYNC_COOLDOW
             scheduleAccessDeactivatedSync(ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS);
         }
     }, Math.max(1000, Number(delayMs) || ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS));
-    */
 }
 
 async function waitForAvailableActivationSlot(jobSet, maxConcurrentActivations, excludedSlotKeys = []) {
@@ -1519,12 +1512,11 @@ app.post('/api/admin/products/generate-stop', authenticateAdmin, async (req, res
     }
 });
 
-/** 代理批量测试：使用 local-proxy-bridge 模拟真实业务链路
- *  链路: 测试请求 → 本地代理桥接 → VPN → 远程SOCKS5 → 目标
- *  这样测试通过就意味着业务也能正常工作 */
+/** 代理批量测试：和 pool-emails 一样必须挂在 app.use 之前。
+ *  支持 http(s) / socks5 / socks (走 proxy-agent 自动识别协议)。 */
 app.post('/api/admin/proxy/test', authenticateAdmin, async (req, res) => {
     try {
-        const { SocksProxyAgent } = require('socks-proxy-agent');
+        const { ProxyAgent } = require('proxy-agent');
         const proxies = Array.isArray(req.body?.proxies) ? req.body.proxies : [];
         const cleaned = proxies.map((p) => String(p || '').trim()).filter(Boolean);
         if (!cleaned.length) {
@@ -1545,58 +1537,38 @@ app.post('/api/admin/proxy/test', authenticateAdmin, async (req, res) => {
             return raw.replace(/\{session\}/gi, sid);
         };
 
-        const testOne = async (raw, testPort) => {
+        const testOne = async (raw) => {
             const proxyUrl = subst(raw);
             const t0 = Date.now();
-            let bridge = null;
+            let agent;
             try {
-                bridge = await createProxyBridge({
-                    remoteProxy: proxyUrl,
-                    localPort: testPort,
-                    vpnPort: 7897,
-                    useVpn: true,
-                    vpnType: 'http'
-                });
+                agent = new ProxyAgent({ getProxyForUrl: () => proxyUrl });
             } catch (e) {
-                return { ok: false, error: `代理桥接创建失败: ${e.message}`, latencyMs: Date.now() - t0 };
+                return { ok: false, error: `代理 URL 解析失败: ${e.message}`, latencyMs: Date.now() - t0 };
             }
-
-            try {
-                const agent = new SocksProxyAgent(bridge.localProxy);
-                let lastErr = '';
-                for (const probeUrl of PROBE_URLS) {
-                    try {
-                        const r = await axios.get(probeUrl, {
-                            httpsAgent: agent,
-                            httpAgent: agent,
-                            proxy: false,
-                            timeout: 15000,
-                            validateStatus: () => true
-                        });
-                        if (r.status === 200) {
-                            const ip = String(r.data || '').trim().split(/\s+/)[0];
-                            return { ok: true, ip, latencyMs: Date.now() - t0, probedVia: probeUrl };
-                        }
-                        lastErr = `HTTP ${r.status} via ${probeUrl}`;
-                    } catch (e) {
-                        lastErr = `${e.code || ''} ${e.message}`.trim();
+            let lastErr = '';
+            for (const probeUrl of PROBE_URLS) {
+                try {
+                    const r = await axios.get(probeUrl, {
+                        httpsAgent: agent,
+                        httpAgent: agent,
+                        proxy: false,
+                        timeout: 12000,
+                        validateStatus: () => true
+                    });
+                    if (r.status === 200) {
+                        const ip = String(r.data || '').trim().split(/\s+/)[0];
+                        return { ok: true, ip, latencyMs: Date.now() - t0, probedVia: probeUrl };
                     }
-                }
-                return { ok: false, error: lastErr || '未知错误', latencyMs: Date.now() - t0 };
-            } finally {
-                if (bridge?.server) {
-                    bridge.server.close();
+                    lastErr = `HTTP ${r.status} via ${probeUrl}`;
+                } catch (e) {
+                    lastErr = `${e.code || ''} ${e.message}`.trim();
                 }
             }
+            return { ok: false, error: lastErr || '未知错误', latencyMs: Date.now() - t0 };
         };
 
-        // 串行测试，每个代理使用不同端口避免冲突
-        const results = [];
-        let testPort = 10900;
-        for (const p of cleaned) {
-            const result = await testOne(p, testPort++);
-            results.push(result);
-        }
+        const results = await Promise.all(cleaned.map((p) => testOne(p)));
         return res.json({ success: true, results });
     } catch (error) {
         return res.status(500).json({ success: false, message: error.message });
@@ -1719,7 +1691,7 @@ app.get('/api/admin/session', (req, res) => {
 app.get('/api/admin/data', async (req, res) => {
     try {
         await ensureStoreReady();
-        // await syncAccessDeactivatedProductStatuses(); // 禁用远程同步
+        await syncAccessDeactivatedProductStatuses();
         const data = await store.getAdminData();
         const system = await getSystemMetrics();
         data.runtime = {
@@ -1871,7 +1843,7 @@ app.delete('/api/admin/cdks/:cdk', async (req, res) => {
 app.get('/api/admin/products', async (req, res) => {
     try {
         await ensureStoreReady();
-        // await syncAccessDeactivatedProductStatuses(); // 禁用远程同步
+        await syncAccessDeactivatedProductStatuses();
         res.json(await store.listProducts());
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -2842,13 +2814,12 @@ async function start() {
     }, 60 * 1000).unref();
 
     try {
-        // 禁用 imap.chiyiyi.cloud 同步 - 使用本地 OAuth2 取件
-        // await initializeImapAuth();
-        // await syncAccessDeactivatedProductStatuses(true);
-        // scheduleAccessDeactivatedSync();
-        console.log('[IMAP] 已禁用远程同步，使用本地 OAuth2 取件');
+        await initializeImapAuth();
+        await syncAccessDeactivatedProductStatuses(true);
+        scheduleAccessDeactivatedSync();
     } catch (error) {
         console.error(`[IMAP] 项目启动预刷新失败: ${error.message}`);
+        scheduleAccessDeactivatedSync();
     }
 
     const server = app.listen(PORT, () => {

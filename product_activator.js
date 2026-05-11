@@ -7,12 +7,12 @@ const runtimeLog = require('./runtime-log');
 const { getImapAuthHeaders, forceRefreshImapToken } = require('./imap-auth');
 
 const CONFIG = {
-    MAX_ACCOUNT_RETRIES: 15,        // 最多尝试 15 个不同账号
-    MAX_ACT_RETRIES_PER_ACCOUNT: 10, // 每个账号最多激活重试 10 次
-    MAX_PROTOCOL_RETRIES: 2,         // 协议提取最多重试 2 次
-    MAX_TOPUP_FAILURES_BEFORE_STOP: 10, // 累计失败 10 次后终止整批
-    RETRY_DELAY_MS: 5000,            // 重试间隔 5 秒
-    CHILD_IDLE_TIMEOUT_MS: 60 * 1000 // 子进程 60 秒无输出则超时
+    MAX_ACCOUNT_RETRIES: 15,
+    MAX_ACT_RETRIES_PER_ACCOUNT: 10,
+    MAX_PROTOCOL_RETRIES: 2,
+    MAX_TOPUP_FAILURES_BEFORE_STOP: 10,
+    RETRY_DELAY_MS: 5000,
+    CHILD_IDLE_TIMEOUT_MS: 60 * 1000
 };
 
 const IMAP_ADMIN_EMAIL_API = 'https://imap.chiyiyi.cloud/api/admin/emails';

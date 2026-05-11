@@ -6,7 +6,6 @@ const path = require('path');
 const { getImapAuthHeaders } = require('./imap-auth');
 const { fetchLatestOpenAiOtpOnce } = require('./pool-email-imap');
 const inboxEmail = require('./inbox-email');
-const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
 
 // 使用 stealth 插件
 chromium.use(stealth);
@@ -1026,7 +1025,7 @@ const store = require('./mysql-store');
 
 async function runRegistrationFlow() {
     // (静默) Banner
-    // 由父进程传入proceess.env
+
     const poolEmailId = Number(process.env.POOL_EMAIL_ID || 0) || 0;
     const rawPoolEmail = String(process.env.POOL_EMAIL || '').trim().toLowerCase();
     const poolImapPass = String(process.env.POOL_EMAIL_PASSWORD || '');
@@ -1058,11 +1057,10 @@ async function runRegistrationFlow() {
         console.warn(`⚠️  [系统] 无法从后端获取代理配置: ${e.message}`);
     }
 
-    
-    const hasOauth = Boolean(poolEmailId && rawPoolEmail && poolClientId && poolRefreshToken); // 是否配置了auth2登录方式
-    const hasPlainPwd = Boolean(poolEmailId && rawPoolEmail && poolImapPass);   // 判断 pool 邮箱是否配置了普通密码/IMAP 密码方式
-    const usePoolImap = (emailSource === 'pool') && (hasOauth || hasPlainPwd);  // 判断是否使用邮箱池 pool + IMAP 方式收验证码
-    const useInbox = emailSource === 'inbox';   // 判断是否使用 inbox 临时邮箱方式收验证码
+    const hasOauth = Boolean(poolEmailId && rawPoolEmail && poolClientId && poolRefreshToken);
+    const hasPlainPwd = Boolean(poolEmailId && rawPoolEmail && poolImapPass);
+    const usePoolImap = (emailSource === 'pool') && (hasOauth || hasPlainPwd);
+    const useInbox = emailSource === 'inbox';
 
     let email = '';
     let inboxJwt = '';
@@ -1123,7 +1121,6 @@ async function runRegistrationFlow() {
 
     let browser;
     let page = null;
-    // 注册主流程
     try {
         if (DEBUG_HEADFUL) {
             console.log(`🧪 [Step 0] 启动 Stealth 浏览器环境... (HEADFUL=1，有头模式${CHROMIUM_CHANNEL ? `, channel=${CHROMIUM_CHANNEL}` : ''})`);
@@ -1141,38 +1138,11 @@ async function runRegistrationFlow() {
             launchOptions.channel = CHROMIUM_CHANNEL; // 'chrome' / 'msedge'
         }
 
-        // 代理桥接：解决 SOCKS5 认证 + VPN 链路问题
-        let proxyBridgeInfo = null;
-        const USE_VPN_BRIDGE = process.env.USE_VPN_BRIDGE !== '0'; // 默认启用
-        const VPN_PORT = parseInt(process.env.VPN_PORT || '7897');
-        const LOCAL_PROXY_PORT = parseInt(process.env.LOCAL_PROXY_PORT || '10808');
-
-        if (proxyValue && proxyValue.startsWith('socks5://') && USE_VPN_BRIDGE) {
-            try {
-                proxyBridgeInfo = await createProxyBridge({
-                    remoteProxy: proxyValue,
-                    localPort: LOCAL_PROXY_PORT,
-                    vpnPort: VPN_PORT,
-                    useVpn: true
-                });
-                // 使用本地桥接代理（无认证）
-                launchOptions.proxy = { server: proxyBridgeInfo.localProxy };
-                console.log(`🌐 [系统] 代理桥接已启动，Playwright 使用本地代理 :${LOCAL_PROXY_PORT}`);
-            } catch (e) {
-                console.warn(`⚠️  [系统] 代理桥接启动失败: ${e.message}，尝试直连模式`);
-                // 回退到直接配置（可能不支持认证）
-                const proxyConfig = buildPlaywrightProxy(proxyValue);
-                if (proxyConfig) {
-                    launchOptions.proxy = proxyConfig;
-                }
-            }
-        } else if (proxyValue) {
-            // 非 SOCKS5 或禁用桥接，使用原有逻辑
-            const proxyConfig = buildPlaywrightProxy(proxyValue);
-            if (proxyConfig) {
-                launchOptions.proxy = proxyConfig;
-                console.log(`🌐 [系统] 代理已配置 (直连模式)`);
-            }
+        const proxyConfig = buildPlaywrightProxy(proxyValue);
+        if (proxyConfig) {
+            launchOptions.proxy = proxyConfig;
+            const _proxyHost = (() => { try { return new URL(proxyValue).host; } catch (_) { return '已配置'; } })();
+            console.log(`🌐 [系统] 代理已配置`);
         } else {
             console.log("🌐 [系统] 未配置代理，使用本机出口直连。");
         }
@@ -1195,12 +1165,11 @@ async function runRegistrationFlow() {
         // 解析真实 UA → 构造与之对齐的 Client Hints
         const matchedReg = realUserAgent.match(/Chrome\/(\d+)/);
         const chromeMajorReg = matchedReg ? Number(matchedReg[1]) : 147;
-        
-        //启动浏览器时的附加信息
+
         const context = await browser.newContext({
-            userAgent: realUserAgent,        // userAgent 参数
+            userAgent: realUserAgent,
             viewport: { width: 1280, height: 720 },
-            deviceScaleFactor: 1,   //设备像素比
+            deviceScaleFactor: 1,
             locale: 'en-US',
             timezoneId: 'America/New_York',
             isMobile: false,
@@ -1921,10 +1890,6 @@ async function runRegistrationFlow() {
         }
 
         await browser.close();
-        // 关闭代理桥接
-        if (proxyBridgeInfo) {
-            await closeProxyBridge();
-        }
         // 把邮箱来源/JWT/API base 一起回传，让 oauth_login 用同一个邮箱后端拿验证码
         return {
             email,
@@ -1958,10 +1923,6 @@ async function runRegistrationFlow() {
         }
 
         if (browser) await browser.close();
-        // 关闭代理桥接
-        if (proxyBridgeInfo) {
-            await closeProxyBridge();
-        }
         throw e;
     }
 }

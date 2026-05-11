@@ -9,7 +9,9 @@
       "Bash(node -e ' *)",
       "Bash(npm run *)",
       "Bash(npm start *)",
-      "Bash(node proxy-forwarder.js)"
+      "Bash(node proxy-forwarder.js)",
+      "mcp__plugin_claude-mem_mcp-search__smart_search",
+      "Bash(node *)"
     ]
   }
 }
