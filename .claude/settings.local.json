@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl *)",
+      "Bash(findstr \"LISTENING\")",
+      "Bash(findstr \":7890 :7891 :7897 :1080 :10808\")",
+      "Bash(node -e \"const { createProxyBridge, closeProxyBridge } = require\\('./local-proxy-bridge'\\); \\(async \\(\\) => { try { const info = await createProxyBridge\\({ remoteProxy: 'socks5://kzBDHS:RNW78Fm5@77.111.110.100:30011', localPort: 10808, vpnPort: 7897, useVpn: true }\\); console.log\\('桥接启动成功:', info\\); const axios = require\\('axios'\\); const { SocksProxyAgent } = require\\('socks-proxy-agent'\\); const agent = new SocksProxyAgent\\('socks5://127.0.0.1:10808'\\); console.log\\('测试访问 httpbin.org/ip ...'\\); const res = await axios.get\\('https://httpbin.org/ip', { httpAgent: agent, httpsAgent: agent, timeout: 15000 }\\); console.log\\('出口IP:', res.data\\); await closeProxyBridge\\(\\); console.log\\('桥接已关闭'\\); } catch \\(e\\) { console.error\\('错误:', e.message\\); await closeProxyBridge\\(\\).catch\\(\\(\\) => {}\\); } }\\)\\(\\);\")",
+      "Bash(node -e \"const { createProxyBridge, closeProxyBridge } = require\\('./local-proxy-bridge'\\); \\(async \\(\\) => { try { const info = await createProxyBridge\\({ remoteProxy: 'socks5://kzBDHS:RNW78Fm5@77.111.110.100:30011', localPort: 10808, vpnPort: 7897, useVpn: true, vpnType: 'http' }\\); console.log\\('桥接启动成功'\\); const axios = require\\('axios'\\); const { SocksProxyAgent } = require\\('socks-proxy-agent'\\); const agent = new SocksProxyAgent\\('socks5://127.0.0.1:10808'\\); console.log\\('测试访问 httpbin.org/ip ...'\\); const res = await axios.get\\('https://httpbin.org/ip', { httpAgent: agent, httpsAgent: agent, timeout: 20000 }\\); console.log\\('出口IP:', res.data\\); await closeProxyBridge\\(\\); } catch \\(e\\) { console.error\\('错误:', e.message\\); await closeProxyBridge\\(\\).catch\\(\\(\\) => {}\\); } }\\)\\(\\);\")",
+      "Bash(node -e ' *)",
+      "Bash(npm run *)",
+      "Bash(npm start *)",
+      "Bash(node proxy-forwarder.js)"
+    ]
+  }
+}
