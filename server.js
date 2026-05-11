@@ -1357,11 +1357,11 @@ app.post('/api/admin/products/generate-stop', authenticateAdmin, async (req, res
     }
 });
 
-/** 代理批量测试：和 pool-emails 一样必须挂在 app.use 之前。
- *  支持 http(s) / socks5 / socks (走 proxy-agent 自动识别协议)。 */
+/** 代理批量测试：通过 local-proxy-bridge 走 VPN 链路，确保测试和业务使用相同路径 */
 app.post('/api/admin/proxy/test', authenticateAdmin, async (req, res) => {
     try {
-        const { ProxyAgent } = require('proxy-agent');
+        const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
+        const { SocksProxyAgent } = require('socks-proxy-agent');
         const proxies = Array.isArray(req.body?.proxies) ? req.body.proxies : [];
         const cleaned = proxies.map((p) => String(p || '').trim()).filter(Boolean);
         if (!cleaned.length) {
@@ -1382,16 +1382,26 @@ app.post('/api/admin/proxy/test', authenticateAdmin, async (req, res) => {
             return raw.replace(/\{session\}/gi, sid);
         };
 
-        const testOne = async (raw) => {
+        const testOne = async (raw, index) => {
             const proxyUrl = subst(raw);
             const t0 = Date.now();
-            let agent;
+            const localPort = 10900 + index;
+            let bridge = null;
             try {
-                agent = new ProxyAgent({ getProxyForUrl: () => proxyUrl });
+                bridge = await createProxyBridge({
+                    remoteProxy: proxyUrl,
+                    localPort,
+                    vpnPort: 7897,
+                    useVpn: true,
+                    vpnType: 'http'
+                });
             } catch (e) {
-                return { ok: false, error: `代理 URL 解析失败: ${e.message}`, latencyMs: Date.now() - t0 };
+                return { ok: false, error: `代理桥接失败: ${e.message}`, latencyMs: Date.now() - t0 };
             }
+
+            const agent = new SocksProxyAgent(bridge.localProxy);
             let lastErr = '';
+            let result = null;
             for (const probeUrl of PROBE_URLS) {
                 try {
                     const r = await axios.get(probeUrl, {
@@ -1403,17 +1413,23 @@ app.post('/api/admin/proxy/test', authenticateAdmin, async (req, res) => {
                     });
                     if (r.status === 200) {
                         const ip = String(r.data || '').trim().split(/\s+/)[0];
-                        return { ok: true, ip, latencyMs: Date.now() - t0, probedVia: probeUrl };
+                        result = { ok: true, ip, latencyMs: Date.now() - t0, probedVia: probeUrl };
+                        break;
                     }
                     lastErr = `HTTP ${r.status} via ${probeUrl}`;
                 } catch (e) {
                     lastErr = `${e.code || ''} ${e.message}`.trim();
                 }
             }
-            return { ok: false, error: lastErr || '未知错误', latencyMs: Date.now() - t0 };
+            await closeProxyBridge();
+            return result || { ok: false, error: lastErr || '未知错误', latencyMs: Date.now() - t0 };
         };
 
-        const results = await Promise.all(cleaned.map((p) => testOne(p)));
+        // 串行测试，避免端口冲突
+        const results = [];
+        for (let i = 0; i < cleaned.length; i++) {
+            results.push(await testOne(cleaned[i], i));
+        }
         return res.json({ success: true, results });
     } catch (error) {
         return res.status(500).json({ success: false, message: error.message });

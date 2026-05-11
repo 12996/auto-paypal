@@ -6,6 +6,7 @@ const path = require('path');
 const { getImapAuthHeaders } = require('./imap-auth');
 const { fetchLatestOpenAiOtpOnce } = require('./pool-email-imap');
 const inboxEmail = require('./inbox-email');
+const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
 
 // 使用 stealth 插件
 chromium.use(stealth);
@@ -1121,6 +1122,7 @@ async function runRegistrationFlow() {
 
     let browser;
     let page = null;
+    let proxyBridgeStarted = false;
     try {
         if (DEBUG_HEADFUL) {
             console.log(`🧪 [Step 0] 启动 Stealth 浏览器环境... (HEADFUL=1，有头模式${CHROMIUM_CHANNEL ? `, channel=${CHROMIUM_CHANNEL}` : ''})`);
@@ -1138,11 +1140,26 @@ async function runRegistrationFlow() {
             launchOptions.channel = CHROMIUM_CHANNEL; // 'chrome' / 'msedge'
         }
 
-        const proxyConfig = buildPlaywrightProxy(proxyValue);
-        if (proxyConfig) {
-            launchOptions.proxy = proxyConfig;
-            const _proxyHost = (() => { try { return new URL(proxyValue).host; } catch (_) { return '已配置'; } })();
-            console.log(`🌐 [系统] 代理已配置`);
+        // 通过本地代理桥接连接远程代理（需先走 VPN）
+        if (proxyValue) {
+            try {
+                const bridge = await createProxyBridge({
+                    remoteProxy: proxyValue,
+                    localPort: 10808,
+                    vpnPort: 7897,
+                    useVpn: true,
+                    vpnType: 'http'
+                });
+                proxyBridgeStarted = true;
+                launchOptions.proxy = { server: bridge.localProxy };
+                console.log(`🌐 [系统] 代理桥接已启动，Playwright 使用 ${bridge.localProxy}`);
+            } catch (e) {
+                console.warn(`⚠️  [系统] 代理桥接启动失败: ${e.message}，将尝试直连`);
+                const proxyConfig = buildPlaywrightProxy(proxyValue);
+                if (proxyConfig) {
+                    launchOptions.proxy = proxyConfig;
+                }
+            }
         } else {
             console.log("🌐 [系统] 未配置代理，使用本机出口直连。");
         }
@@ -1890,6 +1907,7 @@ async function runRegistrationFlow() {
         }
 
         await browser.close();
+        if (proxyBridgeStarted) await closeProxyBridge();
         // 把邮箱来源/JWT/API base 一起回传，让 oauth_login 用同一个邮箱后端拿验证码
         return {
             email,
@@ -1923,6 +1941,7 @@ async function runRegistrationFlow() {
         }
 
         if (browser) await browser.close();
+        if (proxyBridgeStarted) await closeProxyBridge();
         throw e;
     }
 }

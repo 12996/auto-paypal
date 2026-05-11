@@ -18,7 +18,8 @@
       "Bash(set PORT=3001)",
       "Bash(tasklist)",
       "Bash(findstr /i \"node\")",
-      "mcp__plugin_claude-mem_mcp-search__smart_outline"
+      "mcp__plugin_claude-mem_mcp-search__smart_outline",
+      "Bash(npm install *)"
     ]
   }
 }
