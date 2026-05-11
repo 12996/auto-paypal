@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const { spawn, execFileSync } = require('child_process');
 const path = require('path');
@@ -7,9 +8,9 @@ const os = require('os');
 const WebSocket = require('ws');
 const axios = require('axios');
 const store = require('./mysql-store');
-const { listRecentEmailsForAdmin } = require('./pool-email-imap');
+const { listRecentEmailsForAdmin, fetchAccessDeactivatedEmails } = require('./pool-email-imap');
 const runtimeLog = require('./runtime-log');
-const { initializeImapAuth, getImapAuthHeaders } = require('./imap-auth');
+const { initializeImap, getImapAuthHeaders } = require('./imap-auth-microsoft');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -19,9 +20,6 @@ const PROCESS_IDLE_TIMEOUT_MS = 60 * 1000;
 const MAX_PROCESS_ATTEMPTS = 10;
 const WS_HEARTBEAT_PING_TYPE = 'ping';
 const WS_HEARTBEAT_PONG_TYPE = 'pong';
-const ACCESS_DEACTIVATED_MESSAGES_URL = 'https://imap.chiyiyi.cloud/api/admin/access-deactivated-messages';
-const ACCESS_DEACTIVATED_SYNC_KEY = 'access_deactivated_messages_last_since';
-const ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS = 30 * 1000;
 const ADMIN_TOKEN_SECRET = process.env.ADMIN_TOKEN_SECRET || crypto
     .createHash('sha256')
     .update(`web_redeem:${process.cwd()}:admin-token-secret`)
@@ -74,10 +72,6 @@ let systemMetricsCache = {
     data: null,
     promise: null
 };
-let accessDeactivatedSyncPromise = null;
-let accessDeactivatedLastSyncAt = 0;
-let accessDeactivatedSyncTimer = null;
-
 function reserveForegroundSlot(slotKey) {
     activeForegroundJobs.add(String(slotKey));
 }
@@ -167,155 +161,6 @@ function parseFlexibleTimestamp(value) {
     }
 
     return null;
-}
-
-function collectMessageEmails(message) {
-    const emails = new Set();
-
-    const addEmail = (value) => {
-        const normalized = String(value || '').trim().toLowerCase();
-        if (normalized && normalized.includes('@')) {
-            emails.add(normalized);
-        }
-    };
-
-    addEmail(message?.targetRecipient);
-
-    const recipientList = String(message?.recipientList || '');
-    const matches = recipientList.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
-    for (const email of matches) {
-        addEmail(email);
-    }
-
-    return [...emails];
-}
-
-async function syncAccessDeactivatedProductStatuses(force = false) {
-    const now = Date.now();
-    if (!force && accessDeactivatedSyncPromise) {
-        return accessDeactivatedSyncPromise;
-    }
-    if (!force && (now - accessDeactivatedLastSyncAt) < ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS) {
-        return { skipped: true, reason: 'cooldown' };
-    }
-
-    accessDeactivatedSyncPromise = (async () => {
-        const previousSinceValue = await store.getAppConfigValue(ACCESS_DEACTIVATED_SYNC_KEY, '');
-        const previousSinceTs = parseFlexibleTimestamp(previousSinceValue);
-        const params = {};
-        if (previousSinceTs) {
-            params.since = String(previousSinceTs);
-        }
-
-        try {
-            const response = await axios.get(ACCESS_DEACTIVATED_MESSAGES_URL, {
-                headers: await getImapAuthHeaders(),
-                params,
-                timeout: 30000
-            });
-
-            const messages = Array.isArray(response?.data?.messages) ? response.data.messages : [];
-            const emailSet = new Set();
-            let latestMessageTs = previousSinceTs;
-
-            for (const message of messages) {
-                for (const email of collectMessageEmails(message)) {
-                    emailSet.add(email);
-                }
-                const messageTs = parseFlexibleTimestamp(message?.date);
-                if (messageTs && (!latestMessageTs || messageTs > latestMessageTs)) {
-                    latestMessageTs = messageTs;
-                }
-            }
-
-            const affectedRows = await store.updateProductStatusByEmails([...emailSet], '封禁');
-            const nextSinceTs = latestMessageTs || now;
-            await store.setAppConfigValue(ACCESS_DEACTIVATED_SYNC_KEY, String(nextSinceTs));
-            accessDeactivatedLastSyncAt = Date.now();
-
-            if (messages.length > 0 || affectedRows > 0) {
-                console.log(`[AccessDeactivated] synced messages=${messages.length} matchedEmails=${emailSet.size} updatedProducts=${affectedRows} since=${previousSinceTs || 'all'} nextSince=${nextSinceTs}`);
-            }
-
-            return {
-                messagesCount: messages.length,
-                matchedEmails: emailSet.size,
-                updatedProducts: affectedRows,
-                previousSinceTs,
-                nextSinceTs
-            };
-        } catch (error) {
-            const isUnauthorized = Number(error?.response?.status || 0) === 401;
-            if (isUnauthorized) {
-                try {
-                    const retryResponse = await axios.get(ACCESS_DEACTIVATED_MESSAGES_URL, {
-                        headers: await getImapAuthHeaders(true),
-                        params,
-                        timeout: 30000
-                    });
-
-                    const retryMessages = Array.isArray(retryResponse?.data?.messages) ? retryResponse.data.messages : [];
-                    const retryEmailSet = new Set();
-                    let latestMessageTs = previousSinceTs;
-
-                    for (const message of retryMessages) {
-                        for (const email of collectMessageEmails(message)) {
-                            retryEmailSet.add(email);
-                        }
-                        const messageTs = parseFlexibleTimestamp(message?.date);
-                        if (messageTs && (!latestMessageTs || messageTs > latestMessageTs)) {
-                            latestMessageTs = messageTs;
-                        }
-                    }
-
-                    const affectedRows = await store.updateProductStatusByEmails([...retryEmailSet], '封禁');
-                    const nextSinceTs = latestMessageTs || now;
-                    await store.setAppConfigValue(ACCESS_DEACTIVATED_SYNC_KEY, String(nextSinceTs));
-                    accessDeactivatedLastSyncAt = Date.now();
-
-                    if (retryMessages.length > 0 || affectedRows > 0) {
-                        console.log(`[AccessDeactivated] synced after token refresh messages=${retryMessages.length} matchedEmails=${retryEmailSet.size} updatedProducts=${affectedRows} since=${previousSinceTs || 'all'} nextSince=${nextSinceTs}`);
-                    }
-
-                    return {
-                        messagesCount: retryMessages.length,
-                        matchedEmails: retryEmailSet.size,
-                        updatedProducts: affectedRows,
-                        previousSinceTs,
-                        nextSinceTs
-                    };
-                } catch (retryError) {
-                    console.error(`[AccessDeactivated] sync failed after token refresh: ${retryError.message}`);
-                    throw retryError;
-                }
-            }
-
-            console.error(`[AccessDeactivated] sync failed: ${error.message}`);
-            throw error;
-        } finally {
-            accessDeactivatedSyncPromise = null;
-        }
-    })();
-
-    return accessDeactivatedSyncPromise;
-}
-
-function scheduleAccessDeactivatedSync(delayMs = ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS) {
-    if (accessDeactivatedSyncTimer) {
-        clearTimeout(accessDeactivatedSyncTimer);
-        accessDeactivatedSyncTimer = null;
-    }
-
-    accessDeactivatedSyncTimer = setTimeout(async () => {
-        try {
-            await ensureStoreReady();
-            await syncAccessDeactivatedProductStatuses(true);
-        } catch (error) {
-            console.error(`[AccessDeactivated] scheduled sync failed: ${error.message}`);
-        } finally {
-            scheduleAccessDeactivatedSync(ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS);
-        }
-    }, Math.max(1000, Number(delayMs) || ACCESS_DEACTIVATED_SYNC_COOLDOWN_MS));
 }
 
 async function waitForAvailableActivationSlot(jobSet, maxConcurrentActivations, excludedSlotKeys = []) {
@@ -1648,6 +1493,22 @@ app.get('/api/admin/pool-emails/:id/messages', authenticateAdmin, async (req, re
     }
 });
 
+app.get('/api/admin/access-deactivated-emails', authenticateAdmin, async (req, res) => {
+    try {
+        const emails = await fetchAccessDeactivatedEmails({
+            email: process.env.MICROSOFT_IMAP_EMAIL,
+            clientId: process.env.MICROSOFT_IMAP_CLIENT_ID,
+            refreshToken: process.env.MICROSOFT_IMAP_REFRESH_TOKEN,
+            host: process.env.MICROSOFT_IMAP_HOST || 'outlook.office365.com',
+            limit: 5
+        });
+        res.json({ success: true, emails });
+    } catch (err) {
+        console.error('[/api/admin/access-deactivated-emails] Error:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.use('/api/admin', authenticateAdmin);
 
 app.get('/api/public/runtime', async (req, res) => {
@@ -1691,7 +1552,6 @@ app.get('/api/admin/session', (req, res) => {
 app.get('/api/admin/data', async (req, res) => {
     try {
         await ensureStoreReady();
-        await syncAccessDeactivatedProductStatuses();
         const data = await store.getAdminData();
         const system = await getSystemMetrics();
         data.runtime = {
@@ -1843,7 +1703,6 @@ app.delete('/api/admin/cdks/:cdk', async (req, res) => {
 app.get('/api/admin/products', async (req, res) => {
     try {
         await ensureStoreReady();
-        await syncAccessDeactivatedProductStatuses();
         res.json(await store.listProducts());
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -2814,12 +2673,9 @@ async function start() {
     }, 60 * 1000).unref();
 
     try {
-        await initializeImapAuth();
-        await syncAccessDeactivatedProductStatuses(true);
-        scheduleAccessDeactivatedSync();
+        await initializeImap();
     } catch (error) {
         console.error(`[IMAP] 项目启动预刷新失败: ${error.message}`);
-        scheduleAccessDeactivatedSync();
     }
 
     const server = app.listen(PORT, () => {

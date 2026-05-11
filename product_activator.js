@@ -113,6 +113,13 @@ function sleep(ms) {
 }
 
 async function generateImapKey(email) {
+    // 如果使用邮箱池模式（本地 Microsoft IMAP），跳过远程 IMAP 服务
+    const emailSource = String(process.env.EMAIL_SOURCE || 'random').toLowerCase();
+    if (emailSource === 'pool') {
+        console.log('[IMAP] 邮箱池模式，跳过远程 IMAP Key 生成');
+        return '';
+    }
+
     const normalizedEmail = String(email || '').trim();
     if (!normalizedEmail) {
         throw new Error('生成 IMAP Key 失败：缺少邮箱');

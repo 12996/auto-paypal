@@ -11,7 +11,14 @@
       "Bash(npm start *)",
       "Bash(node proxy-forwarder.js)",
       "mcp__plugin_claude-mem_mcp-search__smart_search",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(npm list *)",
+      "Bash(taskkill *)",
+      "Bash(findstr :3000)",
+      "Bash(set PORT=3001)",
+      "Bash(tasklist)",
+      "Bash(findstr /i \"node\")",
+      "mcp__plugin_claude-mem_mcp-search__smart_outline"
     ]
   }
 }

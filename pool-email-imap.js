@@ -276,8 +276,105 @@ async function listRecentEmailsForAdmin({
     }
 }
 
+/**
+ * 获取最新的 OpenAI 账户封禁邮件
+ * @param {Object} options
+ * @param {string} options.email - 邮箱地址
+ * @param {string} options.password - 邮箱密码（可选，OAuth 时不需要）
+ * @param {string} options.clientId - OAuth client_id
+ * @param {string} options.refreshToken - OAuth refresh_token
+ * @param {string} options.host - IMAP 服务器地址
+ * @param {number} options.limit - 返回邮件数量，默认 5
+ * @returns {Promise<Array>} 邮件列表
+ */
+async function fetchAccessDeactivatedEmails({
+    email,
+    password,
+    clientId,
+    refreshToken,
+    host,
+    limit = 5
+} = {}) {
+    let client;
+    try {
+        client = await connectOutlookImap({ email, password, clientId, refreshToken, host });
+    } catch (err) {
+        console.error('[fetchAccessDeactivatedEmails] IMAP 连接失败:', err.message);
+        return [];
+    }
+
+    try {
+        // 只扫描 INBOX
+        const msgs = await fetchRecentMessagesFromMailbox(client, 'INBOX', 50);
+
+        // 按时间倒序排列
+        msgs.sort((a, b) => envelopeTimestampMs(b) - envelopeTimestampMs(a));
+
+        const results = [];
+
+        for (const msg of msgs) {
+            if (results.length >= limit) {
+                break;
+            }
+
+            // 检查发件人是否包含 openai.com
+            const fromAddresses = msg.envelope?.from || [];
+            const fromStr = formatAddresses(fromAddresses).toLowerCase();
+            if (!fromStr.includes('openai.com')) {
+                continue;
+            }
+
+            // 解析邮件正文
+            if (!msg.source) {
+                continue;
+            }
+
+            let parsed;
+            try {
+                parsed = await simpleParser(msg.source);
+            } catch (_) {
+                continue;
+            }
+
+            const bodyText = [parsed.text || '', stripHtml(parsed.html || '')].join('\n');
+
+            // 检查正文是否包含 deactivate（不区分大小写）
+            if (!bodyText.toLowerCase().includes('deactivate')) {
+                continue;
+            }
+
+            // 获取收件人
+            const toAddresses = msg.envelope?.to || [];
+            const toStr = formatAddresses(toAddresses);
+
+            // 获取邮件时间
+            const ts = envelopeTimestampMs(msg);
+            const dateStr = ts ? new Date(ts).toISOString() : '';
+
+            // 正文预览（前 200 字符）
+            const bodyPreview = bodyText.substring(0, 200).replace(/\s+/g, ' ').trim();
+
+            results.push({
+                subject: parsed.subject || msg.envelope?.subject || '',
+                from: fromStr,
+                to: toStr,
+                date: dateStr,
+                bodyPreview
+            });
+        }
+
+        return results;
+    } catch (err) {
+        console.error('[fetchAccessDeactivatedEmails] 扫描邮件失败:', err.message);
+        return [];
+    } finally {
+        await client.logout().catch(() => {});
+    }
+}
+
 module.exports = {
     fetchLatestOpenAiOtpOnce,
     listRecentEmailsForAdmin,
-    refreshMicrosoftAccessToken
+    refreshMicrosoftAccessToken,
+    fetchAccessDeactivatedEmails
 };

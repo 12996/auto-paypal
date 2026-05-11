@@ -94,9 +94,13 @@ async function initializeImapAuth() {
     return forceRefreshImapToken();
 }
 
-initializeImapAuth().catch((error) => {
-    console.error(`❌ [IMAP] 启动预刷新失败: ${error.message}`);
-});
+// 仅在非邮箱池模式下自动初始化远程 IMAP 认证
+const emailSource = String(process.env.EMAIL_SOURCE || 'random').toLowerCase();
+if (emailSource !== 'pool') {
+    initializeImapAuth().catch((error) => {
+        console.error(`❌ [IMAP] 启动预刷新失败: ${error.message}`);
+    });
+}
 
 module.exports = {
     initializeImapAuth,
