@@ -707,7 +707,7 @@ async function clickContinueButtonReliably(page, opts = {}) {
                 startUrl,
                 { timeout: confirmTimeoutMs }
             ).then(() => 'urlChanged').catch(() => null),
-            page.waitForSelector('textarea[name="prompt-textarea"]', { timeout: confirmTimeoutMs }).then(() => 'chatLoaded').catch(() => null),
+            page.waitForSelector('#prompt-textarea', { timeout: confirmTimeoutMs }).then(() => 'chatLoaded').catch(() => null),
             (async () => {
                 // 点击后表单 input[name="email"] 消失也算
                 const wait = Date.now() + confirmTimeoutMs;
@@ -746,7 +746,7 @@ async function clickContinueButtonReliably(page, opts = {}) {
                     startUrl,
                     { timeout: 25000 }
                 ).then(() => 'urlChanged').catch(() => null),
-                page.waitForSelector('textarea[name="prompt-textarea"]', { timeout: 25000 }).then(() => 'chatLoaded').catch(() => null),
+                page.waitForSelector('#prompt-textarea', { timeout: 25000 }).then(() => 'chatLoaded').catch(() => null),
                 page.waitForSelector('input[name="name"]', { timeout: 25000 }).then(() => 'profileShown').catch(() => null)
             ]);
             if (ext) {
@@ -1804,7 +1804,7 @@ async function runRegistrationFlow() {
 
                 await Promise.race([
                     page.waitForURL((u) => String(u || '').includes('chatgpt.com'), { timeout: 25000 }).catch(() => { }),
-                    page.waitForSelector('textarea[name="prompt-textarea"]', { timeout: 25000 }).catch(() => { })
+                    page.waitForSelector('#prompt-textarea', { timeout: 25000 }).catch(() => { })
                 ]);
             } else if (isAboutYou) {
                 console.warn("⚠️  [Step 6] /about-you 表单字段无法定位，可能 OpenAI 改版，需要查看截图");
@@ -1817,7 +1817,7 @@ async function runRegistrationFlow() {
         console.log("🎯 [Wait] 正在等待聊天对话框出现（判定注册成功）...");
         try {
             // 等待聊天框出现，这比判断 URL 更稳健
-            await page.waitForSelector('textarea[name="prompt-textarea"]', { state: 'visible', timeout: 45000 });
+            await page.waitForSelector('#prompt-textarea', { state: 'visible', timeout: 45000 });
             console.log("✅ [成功] 已检测到聊天输入框，确认进入主站。");
         } catch (e) {
             if (await isUserAlreadyExistsPage(page)) {
@@ -1870,12 +1870,25 @@ async function runRegistrationFlow() {
         // 等待 session 接口完成，如果返回空白则重试
         let sessionData = null;
         for (let i = 0; i < 5; i++) {
+            console.log(`🎟️ [Session] 第 ${i + 1}/5 次尝试获取 Access Token...`);
             try {
                 // 确保已经在 chatgpt.com 域名下再访问 api
                 if (!page.url().includes('chatgpt.com')) {
-                    await page.goto("https://chatgpt.com", { waitUntil: 'networkidle' });
+                    console.log(`🎟️ [Session] 当前不在 chatgpt.com，先跳转主站...`);
+                    await page.goto("https://chatgpt.com", { waitUntil: 'networkidle', timeout: 120000 });
                 }
-                await page.goto("https://chatgpt.com/api/auth/session", { waitUntil: 'networkidle', timeout: 30000 });
+                console.log(`🎟️ [Session] 正在请求 /api/auth/session（最长等待 2 分钟）...`);
+                // 启动心跳日志，每 30 秒打印一次，避免触发父进程 idle timeout
+                let heartbeatCount = 0;
+                const heartbeat = setInterval(() => {
+                    heartbeatCount++;
+                    console.log(`🎟️ [Session] 仍在等待响应... (${heartbeatCount * 30}s)`);
+                }, 30000);
+                try {
+                    await page.goto("https://chatgpt.com/api/auth/session", { waitUntil: 'networkidle', timeout: 120000 });
+                } finally {
+                    clearInterval(heartbeat);
+                }
                 const content = await page.textContent('body');
                 if (content && content.includes('accessToken')) {
                     sessionData = JSON.parse(content);
@@ -1886,6 +1899,7 @@ async function runRegistrationFlow() {
             } catch (e) {
                 console.warn(`⚠️  [Warn] 获取 Session 异常 (${i + 1}/5): ${e.message}`);
             }
+            console.log(`🎟️ [Session] 等待 3 秒后重试...`);
             await page.reload({ waitUntil: 'networkidle' }).catch(() => { });
             await new Promise(r => setTimeout(r, 3000));
         }

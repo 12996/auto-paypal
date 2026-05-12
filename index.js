@@ -3,6 +3,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const ChatGPTService = require('./chatgpt');
 const fs = require('fs');
 const path = require('path');
+const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
 chromium.use(StealthPlugin());
 // 启用 Stealth 插件（在任何 launch 之前调用）
 
@@ -167,15 +168,28 @@ async function run() {
     if (DEBUG_HEADFUL) {
         console.log(`🧪 [Step 0] 启动 Stealth 浏览器环境... (HEADFUL=1，有头模式${CHROMIUM_CHANNEL ? `, channel=${CHROMIUM_CHANNEL}` : ''})`);
     }
-    const proxyConfig = buildPlaywrightProxy(CONFIG.proxy);
-
-    if (proxyConfig) {
-        launchOptions.proxy = proxyConfig;
-        // 代理详情不再打印（避免泄露凭证 + 减少噪音）
-        const _proxyHost = (() => {
-            try { return new URL(CONFIG.proxy).host; } catch (_) { return '已配置'; }
-        })();
-        console.log(`🌐 [系统] 代理已配置`);
+    // 通过本地代理桥接连接远程代理（需先走 VPN）
+    let proxyBridgeStarted = false;
+    if (CONFIG.proxy) {
+        try {
+            const bridge = await createProxyBridge({
+                remoteProxy: CONFIG.proxy,
+                localPort: 10808,
+                vpnPort: 7897,
+                useVpn: true,
+                vpnType: 'http'
+            });
+            proxyBridgeStarted = true;
+            launchOptions.proxy = { server: bridge.localProxy };
+            console.log(`🌐 [系统] 代理桥接已启动，Playwright 使用 ${bridge.localProxy}`);
+        } catch (e) {
+            console.warn(`⚠️  [系统] 代理桥接启动失败: ${e.message}，将尝试直连`);
+            const proxyConfig = buildPlaywrightProxy(CONFIG.proxy);
+            if (proxyConfig) {
+                launchOptions.proxy = proxyConfig;
+                console.log(`🌐 [系统] 代理已配置（直连模式）`);
+            }
+        }
     }
 
     const browser = await chromium.launch(launchOptions);
@@ -210,6 +224,7 @@ async function run() {
         hasTouch: false,
         // 兜底：把 sec-ch-ua* 与 UA 强制对齐（Playwright 默认会按 UA 自动算，但显式更稳）
         extraHTTPHeaders: {
+            'Accept-Language': 'en-US,en;q=0.9',
             'sec-ch-ua': `"Not)A;Brand";v="8", "Chromium";v="${chromeMajor}", "Google Chrome";v="${chromeMajor}"`,
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Windows"'
@@ -497,7 +512,7 @@ async function run() {
 
     try {
         // --- Phase 0: Proxy Connectivity Check ---
-        if (proxyConfig) {
+        if (launchOptions.proxy) {
             // (静默) 检查代理连通性
             try {
                 const probeResponse = await context.request.get("http://api.ipify.org/?format=text", {
@@ -1057,14 +1072,15 @@ async function run() {
         };
         const isZeroAmountText = (raw) => {
             const text = normalizeAmount(raw);
-            return text === '$0.00'
-                || text === 'US$0.00'
-                || text === 'USD0.00'
-                || text === '0.00'
-                || text === '$0'
-                || text === 'US$0'
-                || text === 'USD0'
-                || text === '0';
+            // 支持多种货币符号: $ € £ ¥ 等
+            // 匹配模式: 可选货币符号/代码 + 0 或 0.00
+            const zeroPatterns = [
+                /^[\$€£¥]?0(\.00)?$/,           // $0, €0.00, £0, ¥0.00 等
+                /^(US\$?|USD|EUR|GBP|JPY|CNY)0(\.00)?$/i,  // US$0, USD0.00, EUR0 等
+                /^0(\.00)?[\$€£¥]?$/,           // 0€, 0.00$ (货币符号在后)
+                /^0(\.00)?\s*(US\$?|USD|EUR|GBP|JPY|CNY)?$/i  // 0 USD, 0.00 EUR
+            ];
+            return zeroPatterns.some(pattern => pattern.test(text));
         };
         const collectAmountTexts = async () => {
             return page.locator('.CurrencyAmount').allTextContents()
@@ -1188,37 +1204,94 @@ async function run() {
 
             await humanFillInput(page, page.locator('#billingAddressLine1'), CONFIG.billing.address);
 
-            // 等待一下，看 Stripe 地址自动补全下拉是否出现
-            await page.waitForTimeout(randomDelay(800, 1500));
+            // 等待地址自动补全下拉出现
+            console.log("⏳ [地址] 等待地址自动补全下拉出现...");
+            await page.waitForTimeout(randomDelay(1000, 2000));
 
-            // Stripe 地址补全下拉的常见选择器
+            // Google 地址自动补全下拉的选择器（根据截图更新）
             const dropdownSelectors = [
+                '.pac-container .pac-item',  // Google Places API 标准选择器
+                '[role="option"]',           // ARIA 选项
                 '.AddressAutocomplete-option',
                 '[data-testid="address-autocomplete-option"]',
                 '.AddressAutocomplete li',
                 '[class*="autocomplete"] li',
                 '[class*="suggestion"]',
-                '[class*="Suggestion"]',
+                '[class*="pac-item"]',       // Google Places 常用类名
             ];
 
             let dropdownFound = false;
+            let selectedAddress = null;
 
-            for (const sel of dropdownSelectors) {
-                try {
-                    const option = page.locator(sel).first();
-                    const visible = await option.isVisible().catch(() => false);
-                    if (visible) {
-                        console.log(`✅ [地址] 检测到地址补全下拉 (${sel})，正在选择第一项...`);
-                        await page.keyboard.press('ArrowDown');
-                        await page.waitForTimeout(randomDelay(200, 400));
-                        await page.keyboard.press('Enter');
-                        dropdownFound = true;
-                        addressAutoFilled = true; // Stripe 会自动填充 zip/city
-                        await page.waitForTimeout(randomDelay(400, 800));
-                        break;
-                    }
-                } catch (_) { /* 继续尝试下一个 selector */ }
+            // 尝试多次检测下拉框（最多等待 8 秒）
+            for (let attempt = 0; attempt < 8 && !dropdownFound; attempt++) {
+                for (const sel of dropdownSelectors) {
+                    try {
+                        const options = page.locator(sel);
+                        const count = await options.count();
+
+                        if (count > 0) {
+                            const firstOption = options.first();
+                            const visible = await firstOption.isVisible().catch(() => false);
+
+                            if (visible) {
+                                // 获取选项文本用于验证
+                                selectedAddress = await firstOption.textContent().catch(() => '');
+                                console.log(`✅ [地址] 检测到地址补全下拉 (${sel})，选项: "${selectedAddress.slice(0, 50)}..."`);
+
+                                // 点击第一个选项
+                                await firstOption.click();
+                                dropdownFound = true;
+                                addressAutoFilled = true;
+
+                                console.log("✅ [地址] 已选择地址补全选项，等待字段自动填充...");
+                                await page.waitForTimeout(randomDelay(1000, 2000));
+                                break;
+                            }
+                        }
+                    } catch (_) { /* 继续尝试下一个 selector */ }
+                }
+
+                if (!dropdownFound) {
+                    await page.waitForTimeout(1000);
+                    console.log(`⏳ [地址] 第 ${attempt + 1} 次检测下拉框...`);
+                }
             }
+
+            // 如果选择了地址自动补全，验证填充的数据
+            if (dropdownFound && addressAutoFilled) {
+                console.log("🔍 [地址] 验证自动填充的数据...");
+
+                // 等待字段填充完成
+                await page.waitForTimeout(2000);
+
+                try {
+                    // 检查自动填充的城市和邮编
+                    const cityField = page.locator('#billingLocality').first();
+                    const zipField = page.locator('#billingPostalCode').first();
+
+                    const autoCity = await cityField.inputValue().catch(() => '');
+                    const autoZip = await zipField.inputValue().catch(() => '');
+
+                    console.log(`📋 [地址] 自动填充结果: 城市="${autoCity}", 邮编="${autoZip}"`);
+                    console.log(`📋 [地址] 配置数据: 城市="${CONFIG.billing.city}", 邮编="${CONFIG.billing.zip}"`);
+
+                    // 如果自动填充的数据与配置不一致，更新配置以保持一致
+                    if (autoCity && autoCity !== CONFIG.billing.city) {
+                        console.log(`⚠️ [地址] 城市不匹配，更新配置: "${CONFIG.billing.city}" → "${autoCity}"`);
+                        CONFIG.billing.city = autoCity;
+                    }
+
+                    if (autoZip && autoZip !== CONFIG.billing.zip) {
+                        console.log(`⚠️ [地址] 邮编不匹配，更新配置: "${CONFIG.billing.zip}" → "${autoZip}"`);
+                        CONFIG.billing.zip = autoZip;
+                    }
+
+                } catch (error) {
+                    console.log(`⚠️ [地址] 验证自动填充数据时出错: ${error.message}`);
+                }
+            }
+
             await page.waitForTimeout(2000);
             if (!dropdownFound) {
                 // 没有下拉框：点一下页面顶部安全的空白区域，让地址框失焦
@@ -1235,39 +1308,114 @@ async function run() {
                 await page.waitForTimeout(randomDelay(300, 600));
             }
 
+            // 验证地址是否真正填写成功
+            console.log("🔍 [地址] 验证街道地址填写结果...");
+            const addressInput = page.locator('#billingAddressLine1').first();
+            let addressValue = '';
+
+            try {
+                addressValue = await addressInput.inputValue().catch(() => '');
+
+                if (!addressValue || addressValue.trim().length === 0) {
+                    console.log("❌ [地址] 街道地址填写失败，输入框为空");
+                    throw new Error("街道地址填写失败");
+                }
+
+                console.log(`✅ [地址] 街道地址填写成功: "${addressValue}"`);
+
+                // 如果没有选择下拉选项，检查是否需要手动触发地址验证
+                if (!dropdownFound) {
+                    console.log("⚠️ [地址] 未选择地址下拉选项，可能需要手动验证");
+                }
+
+            } catch (error) {
+                console.log(`❌ [地址] 验证地址填写时出错: ${error.message}`);
+                throw error;
+            }
+
             console.log("✅ [步骤] 街道地址填写完成。");
             await afterFieldTransition(page, 'address');
         };
         const fillName = async () => {
-            console.log("📝 [步骤] 正在填写 Stripe 账单姓名...");
+            console.log("📝 [步骤] 正在检查 Stripe 账单姓名字段...");
             const nameInput = page.locator('#billingName').first();
+
             try {
-                await nameInput.waitFor({ state: 'attached', timeout: 1000 });
-                if (await nameInput.isVisible()) {
-                    await humanFillInput(page, nameInput, CONFIG.billing.name);
-                    console.log("✅ [步骤] 姓名填写完成。");
-                    await afterFieldTransition(page, 'name');
+                // 先检查元素是否存在，使用较短的超时时间
+                const isAttached = await nameInput.isAttached({ timeout: 2000 }).catch(() => false);
+
+                if (!isAttached) {
+                    console.log("⏩ [姓名] 姓名字段不存在，跳过填写");
+                    return;
                 }
-            } catch (error) { console.log('⏩ 姓名输入框不存在，已跳过'); }
+
+                // 检查元素是否可见
+                const isVisible = await nameInput.isVisible({ timeout: 2000 }).catch(() => false);
+
+                if (!isVisible) {
+                    console.log("⏩ [姓名] 姓名字段不可见，跳过填写");
+                    return;
+                }
+
+                console.log("📝 [姓名] 姓名字段存在且可见，开始填写...");
+                await humanFillInput(page, nameInput, CONFIG.billing.name);
+
+                // 验证姓名是否真正填写成功
+                console.log("🔍 [姓名] 验证姓名填写结果...");
+                const nameValue = await nameInput.inputValue().catch(() => '');
+
+                if (!nameValue || nameValue.trim().length === 0) {
+                    console.log("❌ [姓名] 姓名填写失败，输入框为空");
+                    throw new Error("姓名填写失败");
+                }
+
+                console.log(`✅ [姓名] 姓名填写成功: "${nameValue}"`);
+                console.log("✅ [步骤] 姓名填写完成。");
+                await afterFieldTransition(page, 'name');
+
+            } catch (error) {
+                console.log(`❌ [姓名] 填写姓名时出错: ${error.message}`);
+                console.log("⏩ [姓名] 跳过姓名填写，继续后续流程");
+                // 不再抛出错误，而是优雅地跳过
+            }
         };
         const fillZipAndCity = async () => {
             if (addressAutoFilled) {
                 console.log("⏩ [步骤] 地址已由下拉自动填充，跳过邮编与城市。");
                 return;
             }
-            console.log("📝 [步骤] 正在填写 Stripe 邮编与城市...");
+            console.log("📝 [步骤] 正在等待邮编与城市字段出现...");
 
-            // 这两个字段在 Stripe 部分账户类型下不存在；做一次 isVisible 预检（最多等 6s）
-            // 避免直接进入 humanFillInput 触发 50s 超时浪费时间
+            // 等待地址1填写后，其他字段动态出现
             const zipLoc = page.locator('#billingPostalCode').first();
             const cityLoc = page.locator('#billingLocality').first();
-            const zipVisible = await zipLoc.isVisible({ timeout: 6000 }).catch(() => false);
-            const cityVisible = await cityLoc.isVisible({ timeout: 1000 }).catch(() => false);
 
-            if (!zipVisible && !cityVisible) {
-                console.log("⏩ [步骤] 当前 Stripe 表单无 #billingPostalCode / #billingLocality 字段，跳过。");
+            // 先等待至少一个字段出现（最多等 15 秒）
+            let fieldsAppeared = false;
+            const deadline = Date.now() + 15000;
+
+            while (Date.now() < deadline && !fieldsAppeared) {
+                const zipVisible = await zipLoc.isVisible({ timeout: 1000 }).catch(() => false);
+                const cityVisible = await cityLoc.isVisible({ timeout: 1000 }).catch(() => false);
+
+                if (zipVisible || cityVisible) {
+                    fieldsAppeared = true;
+                    console.log("✅ [步骤] 邮编/城市字段已出现，开始填写...");
+                    break;
+                }
+
+                console.log("⏳ [步骤] 等待邮编/城市字段出现...");
+                await page.waitForTimeout(1000);
+            }
+
+            if (!fieldsAppeared) {
+                console.log("⏩ [步骤] 等待超时，当前 Stripe 表单可能无邮编/城市字段，跳过。");
                 return;
             }
+
+            // 重新检查字段可见性
+            const zipVisible = await zipLoc.isVisible({ timeout: 2000 }).catch(() => false);
+            const cityVisible = await cityLoc.isVisible({ timeout: 2000 }).catch(() => false);
 
             if (Math.random() > 0.5) {
                 if (zipVisible) {
@@ -1399,31 +1547,46 @@ async function run() {
                 await page.waitForTimeout(randomDelay(200, 500));
             }
 
-            // === Stripe 提交前完整性效验 (不比对一致性，仅确保非空) ===
+            // === Stripe 提交前完整性效验 (检查空值 + 同步自动填充数据) ===
             const validateStripeCompleteness = async (page) => {
-                // (静默) 校验 Stripe 表单完整性（仅在补填或全部缺失时打印）
+                // 校验 Stripe 表单完整性：1) 补填空值 2) 同步自动填充的数据
                 const criticalSelectors = [
-                    { sel: '#billingName', name: "姓名", val: CONFIG.billing.name },
-                    { sel: '#billingAddressLine1', name: "街道地址", val: CONFIG.billing.address },
-                    { sel: '#billingAddressCity', name: "城市", val: CONFIG.billing.city },
-                    { sel: '#billingAddressState', name: "州/省", val: CONFIG.billing.state },
-                    { sel: '#billingPostalCode', name: "邮编", val: CONFIG.billing.zip }
+                    { sel: '#billingName', name: "姓名", configKey: 'name' },
+                    { sel: '#billingAddressLine1', name: "街道地址", configKey: 'address' },
+                    { sel: '#billingAddressCity', name: "城市", configKey: 'city' },
+                    { sel: '#billingAddressState', name: "州/省", configKey: 'state' },
+                    { sel: '#billingPostalCode', name: "邮编", configKey: 'zip' }
                 ];
+
                 let refilledCount = 0;
+                let syncedCount = 0;
+
                 for (const item of criticalSelectors) {
                     const el = page.locator(item.sel);
                     if (await el.isVisible().catch(() => false)) {
-                        const val = await el.inputValue().catch(() => "");
-                        if (!val || val.trim().length < 1) {
+                        const currentValue = await el.inputValue().catch(() => "");
+                        const configValue = CONFIG.billing[item.configKey];
+
+                        // 1. 检查是否为空，如果为空则补填
+                        if (!currentValue || currentValue.trim().length < 1) {
                             console.warn(`[!] [效验失败] Stripe ${item.name} 为空，紧急补填...`);
-                            await humanFillInput(page, el, item.val);
+                            await humanFillInput(page, el, configValue);
                             await page.waitForTimeout(300);
                             refilledCount++;
                         }
+                        // 2. 检查自动填充的值是否与配置不同，如果不同则同步配置
+                        else if (currentValue !== configValue && currentValue.trim().length > 0) {
+                            console.log(`⚠️ [效验] ${item.name} 自动填充不匹配，同步配置: "${configValue}" → "${currentValue}"`);
+                            CONFIG.billing[item.configKey] = currentValue;
+                            syncedCount++;
+                        }
                     }
                 }
-                if (refilledCount === 0) {
+
+                if (refilledCount === 0 && syncedCount === 0) {
                     console.log(`✅ [效验] Stripe 表单完整性通过`);
+                } else {
+                    console.log(`✅ [效验] Stripe 表单处理完成 (补填: ${refilledCount}, 同步: ${syncedCount})`);
                 }
             };
             await validateStripeCompleteness(page);
@@ -1858,6 +2021,10 @@ async function run() {
         if (stopInactivityWatcher) stopInactivityWatcher();
         console.log("👋 [系统] 流程结束，正在关闭浏览器...");
         await browser.close().catch(() => { });
+        if (proxyBridgeStarted) {
+            await closeProxyBridge();
+            console.log("[ProxyBridge] 代理桥接已关闭");
+        }
     }
 }
 
