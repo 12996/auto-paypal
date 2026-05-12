@@ -12,7 +12,7 @@
 
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
+const { createProxyBridge, closeProxyBridge } = require('../local-proxy-bridge');
 
 chromium.use(StealthPlugin());
 

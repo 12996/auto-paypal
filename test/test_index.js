@@ -16,6 +16,9 @@
  * - HEADFUL: 设为 1 显示浏览器窗口
  */
 
+// 加载 .env 配置（从项目根目录）
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+
 const { spawn } = require('child_process');
 const path = require('path');
 
@@ -65,7 +68,8 @@ const env = {
 
     // PayPal 和短信
     PAYPAL_PASSWORD: process.env.PAYPAL_PASSWORD || 'testpassword123',
-    SMS_API_KEY: process.env.SMS_API_KEY || ''
+    SMS_API_KEY: process.env.SMS_API_KEY || '',
+    BILLING_PHONE: process.env.BILLING_PHONE || '8352755872'
 };
 
 const child = spawn('node', [path.join(__dirname, '..', 'index.js')], {

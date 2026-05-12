@@ -4,6 +4,17 @@ description: Behavioral guidelines to reduce common LLM coding mistakes. Use whe
 license: MIT
 ---
 
+# 调试方法
+
+出错时 HTML 自动保存到 `debug_html/`，用 `node test/test_debug_html.js` 打开调试，找到正确选择器后更新代码。
+
+## 技能资源
+
+启动项目前读取 `C:\Users\zp\.agents\skills` 文件夹下的技能会很有用，特别是：
+- `systematic-debugging` - 系统化调试方法
+- `playwright-skill` - Playwright 自动化技能  
+- `chrome-devtools` - Chrome 开发者工具技能
+
 # 项目记忆
 
 项目相关的记忆文件存放在 `docs/memory/` 目录下，不要使用 Claude Code 默认的用户主盘路径。

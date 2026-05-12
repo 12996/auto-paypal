@@ -6,13 +6,21 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "start:headful": "cross-env HEADFUL=1 node server.js"
+    "start:headful": "cross-env HEADFUL=1 node server.js",
+    "paypal:test": "node test_paypal_form.js",
+    "paypal:debug": "node debug_paypal_selector.js",
+    "paypal:debug-tool": "node run_paypal_debug.js",
+    "paypal:test-form": "node run_paypal_debug.js test-form",
+    "paypal:debug-dom": "node run_paypal_debug.js debug-dom",
+    "paypal:test-selectors": "node run_paypal_debug.js test-selectors",
+    "paypal:full-debug": "node run_paypal_debug.js full-debug"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "axios": "^1.16.0",
+    "commander": "^9.4.1",
     "cors": "^2.8.6",
     "crypto": "^1.0.1",
     "dotenv": "^17.4.2",
