@@ -731,11 +731,11 @@ async function run() {
 
             try {
                 // 0) 先检测是否已经存在无法解决的图片验证
-                const preCheck = await checkUnsolvableCaptcha();
-                if (preCheck.found) {
-                    console.error(`❌ [风控] 检测到 reCAPTCHA 图片验证，无法自动解决: ${preCheck.selector}`);
-                    throw new Error('支付失败 (recaptcha_image)：触发 reCAPTCHA 图片验证，需更换 IP 或稍后重试');
-                }
+                // const preCheck = await checkUnsolvableCaptcha();
+                // if (preCheck.found) {
+                //     console.error(`❌ [风控] 检测到 reCAPTCHA 图片验证，无法自动解决: ${preCheck.selector}`);
+                //     throw new Error('支付失败 (recaptcha_image)：触发 reCAPTCHA 图片验证，需更换 IP 或稍后重试');
+                // }
 
                 // 1) 简单点击型验证（Turnstile/hCaptcha 复选框、Confirm 按钮）
                 const btnHit = await tryFindFirstVisible(BUTTON_SELECTORS);
