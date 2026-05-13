@@ -74,9 +74,11 @@
 
 每个任务由父进程 `product_activator` 调度，分三段子进程：
 
-1. **`register_openai.js`** —— 注册 OpenAI 账号，拿到 `access_token`
-2. **`index.js`** —— 用该 token 创建 0 元 Plus 订单，跑 Stripe Hosted Checkout，跳到 PayPal 走授权
-3. **`oauth_login.js`** —— 支付成功后用注册邮箱重新登录，取出 `refresh_token`，写回成品库
+1. **`register_openai.js`** —— 注册 OpenAI 账号，拿到 `access_token`（使用 CaliforniaFingerprint 伪装）
+2. **`index.js`** —— 用该 token 创建 0 元 Plus 订单，跑 Stripe Hosted Checkout，跳到 PayPal 走授权（使用 CaliforniaFingerprint 伪装）
+3. **`oauth_login.js`** —— 支付成功后用注册邮箱重新登录，取出 `refresh_token`，写回成品库（使用 CaliforniaFingerprint 伪装）
+
+> 💡 **指纹一致性**：三个阶段通过 `FINGERPRINT_CONFIG` 环境变量共享同一份加州指纹配置，确保整个流程的浏览器行为一致。
 
 任意一段失败都会被 `analyzeProcessOutput` 分类（如 `手机号被拒` / `代理超时` / `PayPal风控驳回` / ...），父进程根据分类决定**禁用资产、换号重试、还是终止整批**。
 
@@ -90,8 +92,12 @@
 - 出错时自动 `is_active=0, status='已报废'`，避免反复重试坏资产
 
 ### 2) 反指纹 / 反风控
+- **CaliforniaFingerprint 地区化指纹**：专为加州地区优化的浏览器指纹伪装，覆盖硅谷、洛杉矶、旧金山等城市
+- **全流程指纹一致性**：注册 → 支付 → OAuth 三阶段使用相同指纹配置，通过环境变量跨进程传递
 - **Stealth Plugin** + 自定义 `addInitScript`：精修 `navigator.webdriver / plugins / userAgentData / canvas / WebGL` 等 30+ 指纹点
 - **同一内核全程一致**：UA 与 `userAgentData.brands` 强制对齐，避免 hCaptcha invisible 检出
+- **硬件指纹伪装**：CPU 核心数、设备内存、屏幕分辨率、WebGL 渲染器等全部地区化配置
+- **地理位置智能化**：时区 `America/Los_Angeles`、真实加州坐标、英语+西班牙语多语言
 - **支持真 Chrome / Edge channel**：`CHROMIUM_CHANNEL=chrome` 或 `=msedge`
 - **HEADFUL 模式**：`HEADFUL=1` 切到有头便于调试
 - **PayPal 字段 fast 填充**：模拟密码管理器粘贴节奏，反制「键盘事件过长」打分
@@ -209,6 +215,10 @@ MySQL => root@127.0.0.1:3306/plus_papay
 ├── mysql-store.js           # 全部 MySQL CRUD：资产、配置、成品
 ├── runtime-log.js           # 内存环形 buffer + WebSocket 广播
 ├── mysql-schema.sql         # 全套表结构（启动时也会自动建表）
+├── lib/
+│   ├── california-fingerprint.js  # 加州地区指纹伪装库
+│   ├── browser-fingerprint.js     # 通用浏览器指纹伪装
+│   └── fingerprint-spoofer.js     # 高级指纹伪装方案
 ├── public/
 │   ├── admin.html           # 后台单页面 SPA（任务/CDK/资产/配置/邮箱/日志）
 │   ├── admin-login.html

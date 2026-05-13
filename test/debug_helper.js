@@ -41,6 +41,11 @@ function ensureDebugDir() {
  * @returns {Promise<string|null>} 保存的文件路径，未保存返回 null
  */
 async function saveOnError(page, stepName) {
+    // 只有 DEBUG_MODE=1 时才保存 HTML
+    if (!isDebugMode()) {
+        return null;
+    }
+
     try {
         const url = page.url();
 

@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { getImapAuthHeaders } = require('./imap-auth');
 const inboxEmail = require('./inbox-email');
+const CaliforniaFingerprint = require('./lib/california-fingerprint');
 
 // 使用 stealth 插件
 chromium.use(stealth);
@@ -869,7 +870,26 @@ async function runFullProtocolFlow(email) {
         }
 
         browser = await chromium.launch(launchOptions);
-        const context = await browser.newContext();
+
+        // 获取或生成加州指纹配置
+        let fingerprintConfig;
+        if (process.env.FINGERPRINT_CONFIG) {
+            try {
+                fingerprintConfig = JSON.parse(process.env.FINGERPRINT_CONFIG);
+                console.log('🌴 [指纹] 使用传入的加州指纹配置');
+            } catch (e) {
+                console.log('⚠️ [指纹] 配置解析失败，生成新的加州指纹');
+                fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+            }
+        } else {
+            fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+            console.log('🌴 [指纹] 生成新的加州指纹配置');
+        }
+
+        console.log(`🌴 [指纹] 使用 ${fingerprintConfig.region} 指纹 (${fingerprintConfig.hardwareConcurrency}核/${fingerprintConfig.deviceMemory}GB)`);
+
+        // 使用加州指纹创建上下文
+        const { context } = await CaliforniaFingerprint.createCaliforniaContext(browser, fingerprintConfig);
         page = await context.newPage();
 
         console.log("🔐 [Step 1] 正在处理授权登录...");

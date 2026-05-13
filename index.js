@@ -5,6 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
 const debug = require('./test/debug_helper');
+// 引入指纹伪装库
+const CaliforniaFingerprint = require('./lib/california-fingerprint');
+const BrowserFingerprint = require('./lib/browser-fingerprint');
 chromium.use(StealthPlugin());
 // 启用 Stealth 插件（在任何 launch 之前调用）
 
@@ -21,6 +24,59 @@ function generateRandomOutlookEmail() {
         prefix += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return `${prefix}@hotmail.com`;
+}
+
+function generateRandomPassword() {
+    // 生成符合 PayPal 密码要求的随机密码：
+    // - 至少 8 个字符
+    // - 包含大小写字母、数字、特殊字符
+    // - 不能有 3 个连续相同字符（如 aaa, 111）
+    // - 不能有 3 个连续递增/递减字符（如 abc, 321）
+    const lower = 'abcdefghijklmnopqrstuvwxyz';
+    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const digits = '0123456789';
+    const special = '!@#$%&*';
+
+    // 检查是否有 3 个连续字符（相同或递增/递减）
+    function hasConsecutive(str) {
+        for (let i = 0; i < str.length - 2; i++) {
+            const c1 = str.charCodeAt(i);
+            const c2 = str.charCodeAt(i + 1);
+            const c3 = str.charCodeAt(i + 2);
+            // 三个相同
+            if (c1 === c2 && c2 === c3) return true;
+            // 三个连续递增 (abc, 123)
+            if (c2 === c1 + 1 && c3 === c2 + 1) return true;
+            // 三个连续递减 (cba, 321)
+            if (c2 === c1 - 1 && c3 === c2 - 1) return true;
+        }
+        return false;
+    }
+
+    const allChars = lower + upper + digits + special;
+    const targetLength = 12 + Math.floor(Math.random() * 5); // 12-16 字符
+
+    let password;
+    let attempts = 0;
+    do {
+        // 确保每种字符至少有一个
+        password = '';
+        password += lower.charAt(Math.floor(Math.random() * lower.length));
+        password += upper.charAt(Math.floor(Math.random() * upper.length));
+        password += digits.charAt(Math.floor(Math.random() * digits.length));
+        password += special.charAt(Math.floor(Math.random() * special.length));
+
+        // 填充到目标长度
+        while (password.length < targetLength) {
+            password += allChars.charAt(Math.floor(Math.random() * allChars.length));
+        }
+
+        // 打乱顺序
+        password = password.split('').sort(() => Math.random() - 0.5).join('');
+        attempts++;
+    } while (hasConsecutive(password) && attempts < 100);
+
+    return password;
 }
 
 /**
@@ -49,7 +105,7 @@ const CONFIG = {
         card: process.env.CARD_NUMBER || "",
         expiry: process.env.CARD_EXPIRY || "",
         cvc: process.env.CARD_CVC || "",
-        paypalPassword: process.env.PAYPAL_PASSWORD || "",
+        paypalPassword: process.env.PAYPAL_PASSWORD || generateRandomPassword(),
         smsKey: process.env.SMS_API_KEY || "",
         smsPhone: process.env.BILLING_PHONE || ""
     },
@@ -237,7 +293,25 @@ async function run() {
         }
     };
 
-    const context = await browser.newContext(contextOptions);
+    // 获取或生成加州指纹配置
+    let fingerprintConfig;
+    if (process.env.FINGERPRINT_CONFIG) {
+        try {
+            fingerprintConfig = JSON.parse(process.env.FINGERPRINT_CONFIG);
+            console.log('🌴 [指纹] 使用传入的加州指纹配置');
+        } catch (e) {
+            console.log('⚠️ [指纹] 配置解析失败，生成新的加州指纹');
+            fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+        }
+    } else {
+        fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+        console.log('🌴 [指纹] 生成新的加州指纹配置');
+    }
+
+    console.log(`🌴 [指纹] 使用 ${fingerprintConfig.region} 指纹 (${fingerprintConfig.hardwareConcurrency}核/${fingerprintConfig.deviceMemory}GB)`);
+
+    // 使用加州指纹创建上下文
+    const { context } = await CaliforniaFingerprint.createCaliforniaContext(browser, fingerprintConfig);
 
     // ============= 严格指纹伪装（覆盖 hCaptcha invisible / PerimeterX 主要检测点）=============
     await context.addInitScript((injectedChromeMajor) => {
@@ -1020,7 +1094,30 @@ async function run() {
         //   逐字符 keyboard.type 会被 React 重排吞字符，所以这类字段直接用 page.fill() 一次性写入。
         //   PayPal 不会检测填卡时长，鼠标 / 提交时长由其他人手模拟覆盖。
         async function humanFillInput(page, locator, text, digitsMode = false, fastMode = false) {
+            // PayPal 会自动格式化：卡号加空格、手机号加括号和横线
+            // 校验时只比较核心字符，忽略格式化符号
             const digitsOnly = (s) => String(s || '').replace(/\D/g, '');
+            const normalizeText = (s) => String(s || '').replace(/[\s()\-]/g, '').trim();
+
+            // 先检查是否已有正确的值，避免重复填写导致内容叠加
+            try {
+                await locator.waitFor({ state: 'visible', timeout: 5000 });
+                const existingValue = await locator.inputValue().catch(() => '');
+                const alreadyCorrect = digitsMode
+                    ? (digitsOnly(existingValue) === digitsOnly(text))
+                    : (normalizeText(existingValue) === normalizeText(text));
+                if (alreadyCorrect && existingValue.length > 0) {
+                    console.log(`✓ [跳过] 字段已有正确值: "${existingValue}"`);
+                    return;
+                }
+                // 如果有值但不正确，先清空
+                if (existingValue && existingValue.length > 0) {
+                    console.log(`⚠️ [清空] 字段已有值但不匹配，清空后重填: "${existingValue}" → "${text}"`);
+                    await locator.click({ clickCount: 3 }).catch(() => { });
+                    await page.keyboard.press('Delete').catch(() => { });
+                    await page.waitForTimeout(randomDelay(100, 200));
+                }
+            } catch (_) { /* 忽略检查失败，继续正常填写流程 */ }
 
             // —— digitsMode 或 fastMode：模拟「密码管理器粘贴」，瞬时填入
             // 真实用户在卡号 / 邮箱 / 密码 字段上 90% 是粘贴而非逐字敲，
@@ -1057,9 +1154,12 @@ async function run() {
                     await page.waitForTimeout(randomDelay(150, 350));
 
                     const actualValue = await locator.inputValue().catch(() => null);
+                    // digitsMode: 只比较数字（卡号、CVC）
+                    // fastMode: 去掉空格/括号/横线后比较（邮箱、手机号）
+                    // 普通模式: 去掉空格/括号/横线后比较
                     const compareOk = digitsMode
                         ? (actualValue !== null && digitsOnly(actualValue) === digitsOnly(text))
-                        : (actualValue !== null && actualValue === text);
+                        : (actualValue !== null && normalizeText(actualValue) === normalizeText(text));
                     if (compareOk) {
                         return;
                     }
@@ -1098,11 +1198,12 @@ async function run() {
                 await page.waitForTimeout(randomDelay(200, 400));
 
                 const actualValue = await locator.inputValue().catch(() => null);
-                if (actualValue !== null && actualValue === text) {
+                // 普通模式也用 normalizeText 比较，忽略 PayPal 自动添加的格式化字符
+                if (actualValue !== null && normalizeText(actualValue) === normalizeText(text)) {
                     break;
                 }
                 if (attempt >= 5) {
-                    console.warn(`⚠️ [校验] 普通字段 5 次重填后仍不一致，预期: "${text}"，实际: "${actualValue}"，继续后续流程`);
+                    console.warn(`⚠️ [校验] 普通字段 5 次重填后仍不一致，预期: "${text}"，实际: "${actualValue}"（normalized: "${normalizeText(actualValue)}"），继续后续流程`);
                     break;
                 }
                 console.log(`⚠️ [校验] 第${attempt}次填写不一致，预期: "${text}", 实际: "${actualValue}"，清空重填...`);
@@ -2236,7 +2337,7 @@ async function run() {
         };
 
         if (paypalFieldOrder === 'card_first') {
-            await humanFillInput(page, page.locator('#cardNumber'), billing.card, false, false);
+            await humanFillInput(page, page.locator('#cardNumber'), billing.card, true, false);
             await page.waitForTimeout(randomDelay(400, 800));
             await fillExpiryAndCvc();
             await humanFillInput(page, page.locator('#firstName'), first || '', false, false);
@@ -2247,7 +2348,7 @@ async function run() {
             await page.waitForTimeout(randomDelay(400, 800));
             await humanFillInput(page, page.locator('#lastName'), last || '', false, false);
             await page.waitForTimeout(randomDelay(400, 800));
-            await humanFillInput(page, page.locator('#cardNumber'), billing.card, false, false);
+            await humanFillInput(page, page.locator('#cardNumber'), billing.card, true, false);
             await page.waitForTimeout(randomDelay(400, 800));
             await fillExpiryAndCvc();
         }
@@ -2414,6 +2515,8 @@ async function run() {
             { selector: '#expiryDate', expectedValue: billing.expiry, name: "有效期", digitsMode: true },
             { selector: '#cvv', expectedValue: billing.cvc, name: "安全码", digitsMode: true },
             { selector: '#phone', expectedValue: billing.smsPhone, name: "手机号", digitsMode: true },
+            { selector: '#email', expectedValue: billing.email, name: "邮箱", digitsMode: false },
+            { selector: '#password', expectedValue: billing.paypalPassword, name: "密码", digitsMode: false },
         ];
 
         await validateForm(page, checkFields);

@@ -7,6 +7,8 @@ const { getImapAuthHeaders } = require('./imap-auth');
 const { fetchLatestOpenAiOtpOnce } = require('./pool-email-imap');
 const inboxEmail = require('./inbox-email');
 const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
+// 引入加州指纹伪装库
+const CaliforniaFingerprint = require('./lib/california-fingerprint');
 
 // 使用 stealth 插件
 chromium.use(stealth);
@@ -1166,223 +1168,30 @@ async function runRegistrationFlow() {
 
         browser = await chromium.launch(launchOptions);
 
-        // 取浏览器真实 UA，避免与 Client Hints 不一致（hCaptcha invisible 会查这个一致性）
-        const realUserAgent = (await (async () => {
+        // 获取或生成加州指纹配置
+        let fingerprintConfig;
+        if (process.env.FINGERPRINT_CONFIG) {
             try {
-                const tmpCtx = await browser.newContext();
-                const tmpPage = await tmpCtx.newPage();
-                const ua = await tmpPage.evaluate(() => navigator.userAgent);
-                await tmpCtx.close().catch(() => { });
-                return ua;
-            } catch (_) {
-                return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+                fingerprintConfig = JSON.parse(process.env.FINGERPRINT_CONFIG);
+                console.log('🌴 [指纹] 使用传入的加州指纹配置');
+            } catch (e) {
+                console.log('⚠️ [指纹] 配置解析失败，生成新的加州指纹');
+                fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
             }
-        })());
+        } else {
+            fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+            console.log('🌴 [指纹] 生成新的加州指纹配置');
+        }
 
-        // 解析真实 UA → 构造与之对齐的 Client Hints
-        const matchedReg = realUserAgent.match(/Chrome\/(\d+)/);
-        const chromeMajorReg = matchedReg ? Number(matchedReg[1]) : 147;
+        console.log(`🌴 [指纹] 使用 ${fingerprintConfig.region} 指纹 (${fingerprintConfig.hardwareConcurrency}核/${fingerprintConfig.deviceMemory}GB)`);
 
-        const context = await browser.newContext({
-            userAgent: realUserAgent,
-            viewport: { width: 1280, height: 720 },
-            deviceScaleFactor: 1,
-            locale: 'en-US',
-            timezoneId: 'America/New_York',
-            isMobile: false,
-            hasTouch: false,
-            extraHTTPHeaders: {
-                'sec-ch-ua': `"Not)A;Brand";v="8", "Chromium";v="${chromeMajorReg}", "Google Chrome";v="${chromeMajorReg}"`,
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"'
-            }
-        });
+        // 使用加州指纹创建上下文（已包含完整的指纹伪装）
+        const { context } = await CaliforniaFingerprint.createCaliforniaContext(browser, fingerprintConfig);
 
-        // 与 index.js 同款的严格指纹伪装（保持注册/支付两端指纹一致）
-        await context.addInitScript((injectedChromeMajor) => {
-            const NavProto = Object.getPrototypeOf(navigator);
-            const ScrProto = Object.getPrototypeOf(screen);
-            const safeDefine = (obj, key, getter) => {
-                try { Object.defineProperty(obj, key, { get: getter, configurable: true }); } catch (_) { }
-            };
-
-            try { delete Object.getPrototypeOf(navigator).webdriver; } catch (_) { }
-            safeDefine(NavProto, 'webdriver', () => undefined);
-            try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true }); } catch (_) { }
-
-            try {
-                const uaData = {
-                    brands: [
-                        { brand: 'Not)A;Brand', version: '8' },
-                        { brand: 'Chromium', version: String(injectedChromeMajor) },
-                        { brand: 'Google Chrome', version: String(injectedChromeMajor) }
-                    ],
-                    mobile: false,
-                    platform: 'Windows',
-                    getHighEntropyValues: () => Promise.resolve({
-                        architecture: 'x86', bitness: '64',
-                        brands: uaData.brands,
-                        fullVersionList: uaData.brands.map(b => ({ brand: b.brand, version: `${b.version}.0.0.0` })),
-                        mobile: false, model: '', platform: 'Windows',
-                        platformVersion: '15.0.0', uaFullVersion: `${injectedChromeMajor}.0.0.0`, wow64: false
-                    }),
-                    toJSON: () => ({ brands: uaData.brands, mobile: uaData.mobile, platform: uaData.platform })
-                };
-                safeDefine(NavProto, 'userAgentData', () => uaData);
-            } catch (_) { }
-
-            try {
-                const pdfMime = Object.create(MimeType.prototype);
-                Object.defineProperties(pdfMime, {
-                    type: { get: () => 'application/pdf' },
-                    suffixes: { get: () => 'pdf' },
-                    description: { get: () => 'Portable Document Format' }
-                });
-                const pdfPlugin = Object.create(Plugin.prototype);
-                Object.defineProperties(pdfPlugin, {
-                    name: { get: () => 'Chrome PDF Plugin' },
-                    filename: { get: () => 'internal-pdf-viewer' },
-                    description: { get: () => 'Portable Document Format' },
-                    length: { get: () => 1 },
-                    0: { get: () => pdfMime }
-                });
-                pdfPlugin.item = () => pdfMime;
-                pdfPlugin.namedItem = () => pdfMime;
-                const fakePlugins = Object.create(PluginArray.prototype);
-                Object.defineProperties(fakePlugins, { length: { get: () => 1 }, 0: { get: () => pdfPlugin } });
-                fakePlugins.item = () => pdfPlugin;
-                fakePlugins.namedItem = (n) => n === pdfPlugin.name ? pdfPlugin : null;
-                fakePlugins.refresh = () => { };
-                const fakeMimeTypes = Object.create(MimeTypeArray.prototype);
-                Object.defineProperties(fakeMimeTypes, { length: { get: () => 1 }, 0: { get: () => pdfMime } });
-                fakeMimeTypes.item = () => pdfMime;
-                fakeMimeTypes.namedItem = (n) => n === pdfMime.type ? pdfMime : null;
-                safeDefine(NavProto, 'plugins', () => fakePlugins);
-                safeDefine(NavProto, 'mimeTypes', () => fakeMimeTypes);
-            } catch (_) { }
-
-            safeDefine(NavProto, 'languages', () => ['en-US', 'en']);
-            safeDefine(NavProto, 'language', () => 'en-US');
-            safeDefine(NavProto, 'platform', () => 'Win32');
-            safeDefine(NavProto, 'hardwareConcurrency', () => 8);
-            safeDefine(NavProto, 'deviceMemory', () => 8);
-            safeDefine(NavProto, 'maxTouchPoints', () => 0);
-            safeDefine(NavProto, 'vendor', () => 'Google Inc.');
-            try { safeDefine(NavProto, 'connection', () => ({ effectiveType: '4g', rtt: 100, downlink: 10, saveData: false })); } catch (_) { }
-
-            try {
-                const fakeChrome = {
-                    app: {
-                        isInstalled: false,
-                        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-                        getDetails: () => null, getIsInstalled: () => false
-                    },
-                    runtime: {
-                        OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-                        OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
-                        PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                        PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-                        connect: () => { }, sendMessage: () => { }
-                    },
-                    csi: () => ({ onloadT: Date.now(), pageT: Date.now() - 1000, startE: Date.now() - 2000, tran: 15 }),
-                    loadTimes: () => ({
-                        requestTime: Date.now() / 1000 - 2, startLoadTime: Date.now() / 1000 - 1.5,
-                        commitLoadTime: Date.now() / 1000 - 1, finishDocumentLoadTime: Date.now() / 1000 - 0.5,
-                        finishLoadTime: Date.now() / 1000, firstPaintTime: Date.now() / 1000 - 0.3,
-                        navigationType: 'Other', wasFetchedViaSpdy: true, wasNpnNegotiated: true,
-                        npnNegotiatedProtocol: 'h2', wasAlternateProtocolAvailable: false, connectionInfo: 'h2'
-                    })
-                };
-                Object.defineProperty(window, 'chrome', { value: fakeChrome, writable: true, configurable: true });
-            } catch (_) { }
-
-            try {
-                const origQuery = navigator.permissions.query.bind(navigator.permissions);
-                navigator.permissions.query = (params) => {
-                    if (params && params.name === 'notifications') {
-                        return Promise.resolve({ state: typeof Notification !== 'undefined' ? Notification.permission : 'default', onchange: null });
-                    }
-                    return origQuery(params).catch(() => ({ state: 'prompt', onchange: null }));
-                };
-            } catch (_) { }
-
-            safeDefine(ScrProto, 'colorDepth', () => 24);
-            safeDefine(ScrProto, 'pixelDepth', () => 24);
-
-            try {
-                const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                HTMLCanvasElement.prototype.toDataURL = function (...args) {
-                    const ctx = this.getContext('2d');
-                    if (ctx) {
-                        try {
-                            const w = this.width, h = this.height;
-                            if (w > 0 && h > 0) {
-                                const data = ctx.getImageData(0, 0, 1, 1);
-                                data.data[3] = Math.max(1, data.data[3] - 1);
-                                ctx.putImageData(data, 0, 0);
-                            }
-                        } catch (_) { }
-                    }
-                    return origToDataURL.apply(this, args);
-                };
-                const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-                CanvasRenderingContext2D.prototype.getImageData = function (...args) {
-                    const imageData = origGetImageData.apply(this, args);
-                    try {
-                        if (imageData && imageData.data && imageData.data.length > 16) {
-                            for (let i = 0; i < 16; i += 4) {
-                                imageData.data[i] = Math.max(0, Math.min(255, imageData.data[i] + (Math.random() < 0.5 ? -1 : 1)));
-                            }
-                        }
-                    } catch (_) { }
-                    return imageData;
-                };
-            } catch (_) { }
-
-            try {
-                const fakeWebGL = (gl) => {
-                    const origGetParameter = gl.getParameter.bind(gl);
-                    gl.getParameter = function (param) {
-                        if (param === 0x9245) return 'Google Inc. (Intel)';
-                        if (param === 0x9246) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                        return origGetParameter(param);
-                    };
-                };
-                const origGetCtx = HTMLCanvasElement.prototype.getContext;
-                HTMLCanvasElement.prototype.getContext = function (type, ...args) {
-                    const ctx = origGetCtx.call(this, type, ...args);
-                    if (ctx && (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')) {
-                        try { fakeWebGL(ctx); } catch (_) { }
-                    }
-                    return ctx;
-                };
-            } catch (_) { }
-
-            try {
-                const Proto = (window.OfflineAudioContext || window.webkitOfflineAudioContext || window.AudioContext)?.prototype;
-                if (Proto && Proto.createAnalyser) {
-                    const origCreateAnalyser = Proto.createAnalyser;
-                    Proto.createAnalyser = function () {
-                        const analyser = origCreateAnalyser.call(this);
-                        const origGetFloat = analyser.getFloatFrequencyData.bind(analyser);
-                        analyser.getFloatFrequencyData = function (array) {
-                            origGetFloat(array);
-                            for (let i = 0; i < array.length; i += 1) array[i] += (Math.random() - 0.5) * 0.0001;
-                        };
-                        return analyser;
-                    };
-                }
-            } catch (_) { }
-
-            try {
-                for (const key of Object.keys(window)) {
-                    if (/^(cdc_|\$cdc_|_phantom|callPhantom|webdriver-|driver-)/.test(key)) {
-                        try { delete window[key]; } catch (_) { }
-                    }
-                }
-            } catch (_) { }
-        }, chromeMajorReg);
+        // 输出指纹配置供后续阶段使用
+        if (!process.env.FINGERPRINT_CONFIG) {
+            console.log('🌴 [指纹] 配置输出:', JSON.stringify(fingerprintConfig));
+        }
 
         page = await context.newPage();
 

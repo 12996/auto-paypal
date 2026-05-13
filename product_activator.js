@@ -5,6 +5,7 @@ const axios = require('axios');
 const store = require('./mysql-store');
 const runtimeLog = require('./runtime-log');
 const { getImapAuthHeaders, forceRefreshImapToken } = require('./imap-auth');
+const CaliforniaFingerprint = require('./lib/california-fingerprint');
 
 const CONFIG = {
     MAX_ACCOUNT_RETRIES: 15,
@@ -468,6 +469,10 @@ function isOauthAddPhoneError(result) {
 }
 
 async function runActivationProcess(accessToken, cdk, runtimeAssets, runtimeJobKey = '') {
+    // 生成指纹配置并传递给子进程
+    const fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+    console.log(`🌴 [Activation] 生成加州指纹: ${fingerprintConfig.region}, CPU: ${fingerprintConfig.hardwareConcurrency}核`);
+
     return runActivationChild(
         path.join(__dirname, 'index.js'),
         [],
@@ -481,7 +486,8 @@ async function runActivationProcess(accessToken, cdk, runtimeAssets, runtimeJobK
             CARD_NUMBER: runtimeAssets?.card?.number || '',
             CARD_EXPIRY: runtimeAssets?.card?.expiry || '',
             CARD_CVC: runtimeAssets?.card?.cvc || '',
-            IS_PRODUCT_FLOW: 'true'
+            IS_PRODUCT_FLOW: 'true',
+            FINGERPRINT_CONFIG: JSON.stringify(fingerprintConfig)
         },
         undefined,
         { runtimeJobKey: String(runtimeJobKey || '') }
@@ -712,6 +718,11 @@ async function runRegistrationProcess(onProgress, runtimeJobKey = '') {
 
     const childEnv = { ...process.env };
 
+    // 生成指纹配置并传递给子进程
+    const fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+    childEnv.FINGERPRINT_CONFIG = JSON.stringify(fingerprintConfig);
+    console.log(`🌴 [Registration] 生成加州指纹: ${fingerprintConfig.region}, CPU: ${fingerprintConfig.hardwareConcurrency}核`);
+
     // 邮箱来源标记
     childEnv.EMAIL_SOURCE = emailSource;
 
@@ -803,7 +814,16 @@ async function runProtocolProcess(email, onProgress, runtimeJobKey = '', inboxBu
         randomDomainCfg = String(await store.getAppConfigValue('random_email_domain', 'chiyiyi.cloud'))
             .trim().replace(/^@/, '').toLowerCase() || 'chiyiyi.cloud';
     } catch (_) { /* 忽略，使用默认 */ }
-    const protocolEnv = { ...process.env, RANDOM_EMAIL_DOMAIN: randomDomainCfg };
+
+    // 生成指纹配置并传递给子进程
+    const fingerprintConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint();
+    console.log(`🌴 [Protocol] 生成加州指纹: ${fingerprintConfig.region}, CPU: ${fingerprintConfig.hardwareConcurrency}核`);
+
+    const protocolEnv = {
+        ...process.env,
+        RANDOM_EMAIL_DOMAIN: randomDomainCfg,
+        FINGERPRINT_CONFIG: JSON.stringify(fingerprintConfig)
+    };
     // 把注册阶段的邮箱后端凭证透传给 oauth_login，让它用同一个 API 拿 OAuth 验证码
     if (inboxBundle.emailSource) {
         protocolEnv.EMAIL_SOURCE = inboxBundle.emailSource;
