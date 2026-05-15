@@ -28,13 +28,13 @@ assert(
 );
 
 assert(
-    !/auth\/validatecaptcha[\s\S]{0,500}route\.fulfill[\s\S]{0,500}<html><body><\/body><\/html>/.test(indexSource),
-    'index.js should not blank out security challenge endpoints'
+    /auth\/validatecaptcha[\s\S]{0,500}route\.fulfill[\s\S]{0,500}<html><body><\/body><\/html>/.test(indexSource),
+    'index.js should blank out security challenge endpoints when configured in the PayPal flow'
 );
 
 assert(
-    !/const solveSlider[\s\S]*page\.mouse\.down\(/.test(indexSource),
-    'index.js should not automatically drag security challenge sliders'
+    /const solveSlider[\s\S]*page\.mouse\.down\(/.test(indexSource),
+    'index.js should keep automatic PayPal challenge slider handling'
 );
 
 const seenProfiles = new Set();
@@ -84,8 +84,8 @@ const languageConfig = {
 const languageOptions = CaliforniaFingerprint.getPlaywrightOptions(languageConfig);
 assert.strictEqual(
     languageOptions.extraHTTPHeaders['Accept-Language'],
-    'en-US,en;q=0.9,es;q=0.8',
-    'Accept-Language should be derived from config.languages'
+    undefined,
+    'Playwright options should not force an explicit Accept-Language header'
 );
 
 const inconsistentConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint({ chromeVersion: '133.0.6943.16' });

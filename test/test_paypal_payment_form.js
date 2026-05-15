@@ -16,7 +16,30 @@ const path = require('path');
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
+
+const env = {
+    ...process.env,
+    HEADFUL: process.env.HEADFUL || '1',
+
+    BILLING_COUNTRY: process.env.BILLING_COUNTRY || 'US',
+    BILLING_ADDRESS: process.env.BILLING_ADDRESS || '15810 Gale Ave',
+    BILLING_CITY: process.env.BILLING_CITY || 'Hacienda Heights',
+    BILLING_STATE: process.env.BILLING_STATE || 'CA',
+    BILLING_ZIP: process.env.BILLING_ZIP || '91745',
+    BILLING_NAME: process.env.BILLING_NAME || 'DOMINIQUE CAMPBELL',
+    BILLING_EMAIL: process.env.BILLING_EMAIL || `paypaltest${Date.now()}@hotmail.com`,
+
+    CARD_NUMBER: process.env.CARD_NUMBER || '4859540166445568',
+    CARD_EXPIRY: process.env.CARD_EXPIRY || '02/30',
+    CARD_CVC: process.env.CARD_CVC || '532',
+
+    PAYPAL_PASSWORD: process.env.PAYPAL_PASSWORD || '123qwe456qsd',
+    SMS_API_KEY: process.env.SMS_API_KEY || 'http://a.62-us.com/api/get_sms?key=f8f47a39ee7d6bcccae09b6350a754ff',
+    BILLING_PHONE: process.env.BILLING_PHONE || '8352755872'
+};
+
+Object.assign(process.env, env);
 
 const CaliforniaFingerprint = require('../lib/california-fingerprint');
 const debug = require('./debug_helper');
@@ -108,7 +131,10 @@ function validateBilling(billing) {
 
     const missing = required.filter(([, value]) => !String(value || '').trim()).map(([key]) => key);
     if (missing.length) {
-        throw new Error(`缺少必要环境变量: ${missing.join(', ')}`);
+        const error = new Error(`缺少必要环境变量: ${missing.join(', ')}`);
+        error.code = 'MISSING_BILLING_ENV';
+        error.missing = missing;
+        throw error;
     }
 
     if (!billing.phone) {
@@ -638,7 +664,15 @@ async function main() {
 }
 
 if (require.main === module) {
-    main().catch(() => process.exit(1));
+    main().catch((error) => {
+        if (error && error.code === 'MISSING_BILLING_ENV') {
+            console.error(`❌ 启动前检查失败: ${error.message}`);
+            console.error('请在 .env 中补齐上述字段，或临时在当前 PowerShell 会话中设置。');
+        } else if (error) {
+            console.error(`❌ 测试异常退出: ${error.message}`);
+        }
+        process.exit(1);
+    });
 }
 
 module.exports = {

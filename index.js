@@ -134,48 +134,6 @@ function buildPlaywrightProxy(proxyValue) {
     }
 }
 
-function forceEnglishPayPalLocaleUrl(rawUrl) {
-    try {
-        const url = new URL(rawUrl);
-        const host = url.hostname.toLowerCase();
-        const isPayPalPageHost = host === 'paypal.com' || host === 'www.paypal.com';
-        if (!isPayPalPageHost) return rawUrl;
-
-        url.searchParams.set('locale.x', 'en_US');
-        url.searchParams.set('country.x', 'US');
-        return url.toString();
-    } catch (_) {
-        return rawUrl;
-    }
-}
-
-async function forcePayPalEnglishCookies(context) {
-    try {
-        await context.addCookies([
-            {
-                name: 'LANG',
-                value: 'en_US%3BUS',
-                domain: '.paypal.com',
-                path: '/',
-                secure: true,
-                httpOnly: false,
-                sameSite: 'Lax'
-            },
-            {
-                name: 'cookie_check',
-                value: 'yes',
-                domain: '.paypal.com',
-                path: '/',
-                secure: true,
-                httpOnly: false,
-                sameSite: 'Lax'
-            }
-        ]);
-    } catch (error) {
-        console.warn(`⚠️ [系统] PayPal 英文 cookie 预设失败: ${error.message}`);
-    }
-}
-
 function buildDebugScreenshotPath(prefix) {
     const screenshotDir = path.join(__dirname, 'debug_screenshots', '激活');
     fs.mkdirSync(screenshotDir, { recursive: true });
@@ -265,8 +223,7 @@ async function run(options = {}) {
     const CHROMIUM_CHANNEL = (process.env.CHROMIUM_CHANNEL || '').trim();
 
     const launchArgs = [
-        '--disable-blink-features=AutomationControlled',
-        '--lang=en-US'
+        '--disable-blink-features=AutomationControlled'
     ];
     if (!DEBUG_HEADFUL) {
         launchArgs.push('--no-sandbox', '--disable-setuid-sandbox');
@@ -336,7 +293,6 @@ async function run(options = {}) {
     const contextOptions = {
         userAgent: realUserAgent,
         viewport,
-        locale: 'en-US',
         timezoneId: 'America/New_York',
         // PayPal HAR: 美国账户场景；屏幕尺寸 1920x1080
         screen: { width: 1920, height: 1080 },
@@ -345,7 +301,6 @@ async function run(options = {}) {
         hasTouch: false,
         // 兜底：把 sec-ch-ua* 与 UA 强制对齐（Playwright 默认会按 UA 自动算，但显式更稳）
         extraHTTPHeaders: {
-            'Accept-Language': 'en-US,en;q=0.9',
             'sec-ch-ua': `"Not)A;Brand";v="8", "Chromium";v="${chromeMajor}", "Google Chrome";v="${chromeMajor}"`,
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Windows"'
@@ -456,25 +411,6 @@ async function run(options = {}) {
         }, effectiveFingerprintConfig);
     }
 
-    await forcePayPalEnglishCookies(context);
-
-    await context.route('**/*', async (route) => {
-        const request = route.request();
-        if (request.resourceType() === 'document') {
-            const forcedUrl = forceEnglishPayPalLocaleUrl(request.url());
-            const forcedHeaders = {
-                ...request.headers(),
-                'accept-language': 'en-US,en;q=0.9'
-            };
-            if (forcedUrl !== request.url()) {
-                console.log(`[PayPal Locale] force en_US: ${request.url()} -> ${forcedUrl}`);
-                return route.continue({ url: forcedUrl, headers: forcedHeaders });
-            }
-            return route.continue({ headers: forcedHeaders });
-        }
-        return route.continue();
-    });
-
     let page = null;
     let stopInactivityWatcher = null;
 
@@ -510,7 +446,7 @@ async function run(options = {}) {
         } else {
             const gpt = new ChatGPTService(context.request, CONFIG.chatgptToken, CONFIG.stripeKey);
             // (静默) 创建订单（成功/失败由 chatgpt.js 内打印）
-            paypalUrl = await gpt.getPayPalApprovalUrl(CONFIG.billing);
+            paypalUrl = await gpt.getPayPalApprovalUrl();
 
             if (!paypalUrl) {
                 throw new Error("无法获取 PayPal 审批链接");
@@ -539,15 +475,13 @@ async function run(options = {}) {
             } catch (_) { /* ignore */ }
         });
         await page.route('**/auth/validatecaptcha', async route => {
-            // 如果请求是针对验证页面的，返回一个空白的 HTML
             console.log('拦截到了安全挑战页面，正在屏蔽...');
             await route.fulfill({
                 status: 200,
                 contentType: 'text/html',
-                body: '<html><body></body></html>' // 返回空白内容
+                body: '<html><body></body></html>'
             });
         });
-
         // 已禁用「无动静自动截图」（用户要求）。失败时仍由各 catch 分支主动截图诊断。
         stopInactivityWatcher = () => { /* noop */ };
         if (false) {
@@ -665,10 +599,9 @@ async function run(options = {}) {
                 "div:has-text('Drag the slider')",
                 "p:has-text('Move the slider all the way to the right')"
             ];
-            // reCAPTCHA 图片验证特征（无法自动解决）
             const UNSOLVABLE_CAPTCHA_SELECTORS = [
-                "iframe[src*='recaptcha'][src*='bframe']",  // reCAPTCHA 图片验证 iframe
-                ".rc-imageselect",                          // 图片选择区域
+                "iframe[src*='recaptcha'][src*='bframe']",
+                ".rc-imageselect",
                 "[class*='rc-imageselect']",
                 "iframe[title*='recaptcha challenge']"
             ];
@@ -694,7 +627,6 @@ async function run(options = {}) {
                 return null;
             };
 
-            // 快速检测是否存在无法解决的验证码（不等待）
             const checkUnsolvableCaptcha = async () => {
                 for (const frame of collectFrames()) {
                     for (const sel of UNSOLVABLE_CAPTCHA_SELECTORS) {
@@ -705,7 +637,6 @@ async function run(options = {}) {
                             }
                         } catch (_) { }
                     }
-                    // 额外检查：reCAPTCHA bframe iframe 的存在
                     const url = frame.url() || '';
                     if (/recaptcha.*bframe/i.test(url)) {
                         return { selector: url, found: true };
@@ -715,14 +646,6 @@ async function run(options = {}) {
             };
 
             try {
-                // 0) 先检测是否已经存在无法解决的图片验证
-                // const preCheck = await checkUnsolvableCaptcha();
-                // if (preCheck.found) {
-                //     console.error(`❌ [风控] 检测到 reCAPTCHA 图片验证，无法自动解决: ${preCheck.selector}`);
-                //     throw new Error('支付失败 (recaptcha_image)：触发 reCAPTCHA 图片验证，需更换 IP 或稍后重试');
-                // }
-
-                // 1) 简单点击型验证（Turnstile/hCaptcha 复选框、Confirm 按钮）
                 const btnHit = await tryFindFirstVisible(BUTTON_SELECTORS);
                 if (btnHit) {
                     console.log(`🧩 [风控] 检测到验证按钮: ${btnHit.selector}`);
@@ -735,7 +658,6 @@ async function run(options = {}) {
                         }
                         await page.waitForTimeout(3000);
 
-                        // 点击后检测是否弹出了图片验证
                         const postCheck = await checkUnsolvableCaptcha();
                         if (postCheck.found) {
                             console.error(`❌ [风控] 点击验证后弹出 reCAPTCHA 图片验证，无法自动解决: ${postCheck.selector}`);
@@ -745,7 +667,6 @@ async function run(options = {}) {
                         console.log("✅ [风控] 验证按钮点击完成。");
                         return true;
                     } catch (e) {
-                        // 如果是我们主动抛出的 recaptcha_image 错误，继续向上抛
                         if (e.message.includes('recaptcha_image')) {
                             throw e;
                         }
@@ -753,7 +674,6 @@ async function run(options = {}) {
                     }
                 }
 
-                // 2) 滑块拖动
                 const sliderHit = await tryFindFirstVisible(SLIDER_SELECTORS);
                 if (sliderHit) {
                     const { frame, selector, locator: slider } = sliderHit;
@@ -770,7 +690,6 @@ async function run(options = {}) {
                     const cBox = (await container.isVisible({ timeout: 200 }).catch(() => false))
                         ? await container.boundingBox().catch(() => null)
                         : null;
-                    // PayPal 滑块需要拖到容器最右端，距离 = 容器宽 - 滑块宽（再加少量富余确保贴右边）
                     const distance = cBox ? Math.max(0, cBox.width - box.width + 6) : 310;
 
                     const startX = box.x + box.width / 2;
@@ -783,7 +702,7 @@ async function run(options = {}) {
                     const steps = 25;
                     for (let i = 1; i <= steps; i += 1) {
                         const t = i / steps;
-                        const ease = 1 - Math.pow(1 - t, 3); // EaseOutCubic
+                        const ease = 1 - Math.pow(1 - t, 3);
                         await page.mouse.move(startX + distance * ease, startY + (Math.random() * 6 - 3));
                         await page.waitForTimeout(Math.random() * 15 + 10);
                     }
@@ -797,7 +716,6 @@ async function run(options = {}) {
                     return true;
                 }
 
-                // 3) 没有命中：把页面上常见挑战 iframe 列出来便于排查
                 const knownIframeMatches = [];
                 for (const frame of collectFrames()) {
                     const url = frame.url() || '';
@@ -811,7 +729,6 @@ async function run(options = {}) {
                     console.log("🧩 [风控] 未检测到滑块/验证按钮（PayPal 未下发挑战）。");
                 }
             } catch (e) {
-                // 如果是无法解决的验证码错误，向上抛出终止任务
                 if (e.message.includes('recaptcha_image')) {
                     throw e;
                 }
@@ -2217,7 +2134,6 @@ async function run(options = {}) {
             } catch (_) { }
             const solved = await solveSlider();
             if (solved) {
-                // 解完滑块后给 PayPal 一点时间重渲染
                 await page.waitForTimeout(randomDelay(1500, 2500));
                 continue;
             }
