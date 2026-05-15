@@ -860,7 +860,10 @@ async function runFullProtocolFlow(email) {
     let page = null;
     try {
         const launchOptions = {
-            headless: true
+            headless: true,
+            args: [
+                '--lang=en-US'
+            ]
         };
         const playwrightProxy = buildPlaywrightProxy(proxyValue);
         if (playwrightProxy) {

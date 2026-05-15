@@ -18,11 +18,20 @@ async function testPayPalRiskDetection() {
         slowMo: 1000  // 慢速执行便于观察
     });
 
-    // 禁用 JavaScript，防止 PayPal 脚本执行跳转
-    const context = await browser.newContext({
-        javaScriptEnabled: false
-    });
+    // 启用 JavaScript 但拦截网络请求防止跳转
+    const context = await browser.newContext();
     const page = await context.newPage();
+
+    // 拦截所有外部网络请求，只允许本地文件
+    await page.route('**/*', (route) => {
+        const url = route.request().url();
+        if (url.startsWith('file://')) {
+            route.continue();
+        } else {
+            // 阻止所有外部请求（包括跳转）
+            route.abort();
+        }
+    });
 
     try {
         // 打开本地保存的风控页面

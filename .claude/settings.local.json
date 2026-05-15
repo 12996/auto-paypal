@@ -20,7 +20,8 @@
       "Bash(findstr /i \"node\")",
       "mcp__plugin_claude-mem_mcp-search__smart_outline",
       "Bash(npm install *)",
-      "Bash(dir \"F:\\\\work\\\\email\\\\plus_gopay_gptp-plus-main\\\\debug_html\" /b)"
+      "Bash(dir \"F:\\\\work\\\\email\\\\plus_gopay_gptp-plus-main\\\\debug_html\" /b)",
+      "Bash(dir debug_html /b)"
     ]
   }
 }

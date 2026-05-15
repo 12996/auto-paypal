@@ -4,7 +4,8 @@ class ChatGPTService {
         this.token = token;
         this.headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9"
         };
         // 外部订单 API 配置
         this.orderApiUrl = "https://payurl.779.chat/api/request";
@@ -16,7 +17,7 @@ class ChatGPTService {
      */
     async getPayPalApprovalUrl(config) {
         try {
-            const payUrl = await this._createOrder();
+            const payUrl = await this._createOrder(config);
             if (!payUrl) return null;
 
             console.log(`✅ 支付链接已生成`);
@@ -31,8 +32,10 @@ class ChatGPTService {
      * 创建订单 - 调用外部 API 获取支付链接
      * 自动重试最多 3 次
      */
-    async _createOrder() {
+    async _createOrder(config = {}) {
         let lastError = null;
+        const orderLocale = 'en_US';
+        const orderCountry = config?.country || 'US';
 
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
             try {
@@ -42,7 +45,10 @@ class ChatGPTService {
                     headers: this.headers,
                     data: {
                         token: this.token,
-                        plus: true
+                        plus: true,
+                        locale: orderLocale,
+                        language: orderLocale,
+                        country: orderCountry
                     }
                 });
 

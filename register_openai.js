@@ -1134,6 +1134,7 @@ async function runRegistrationFlow() {
             headless: !DEBUG_HEADFUL, // HEADFUL=1 → 有头便于抓包/调试
             args: [
                 '--disable-blink-features=AutomationControlled',
+                '--lang=en-US',
                 '--no-sandbox',
                 '--disable-setuid-sandbox'
             ]

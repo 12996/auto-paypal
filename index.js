@@ -134,6 +134,48 @@ function buildPlaywrightProxy(proxyValue) {
     }
 }
 
+function forceEnglishPayPalLocaleUrl(rawUrl) {
+    try {
+        const url = new URL(rawUrl);
+        const host = url.hostname.toLowerCase();
+        const isPayPalPageHost = host === 'paypal.com' || host === 'www.paypal.com';
+        if (!isPayPalPageHost) return rawUrl;
+
+        url.searchParams.set('locale.x', 'en_US');
+        url.searchParams.set('country.x', 'US');
+        return url.toString();
+    } catch (_) {
+        return rawUrl;
+    }
+}
+
+async function forcePayPalEnglishCookies(context) {
+    try {
+        await context.addCookies([
+            {
+                name: 'LANG',
+                value: 'en_US%3BUS',
+                domain: '.paypal.com',
+                path: '/',
+                secure: true,
+                httpOnly: false,
+                sameSite: 'Lax'
+            },
+            {
+                name: 'cookie_check',
+                value: 'yes',
+                domain: '.paypal.com',
+                path: '/',
+                secure: true,
+                httpOnly: false,
+                sameSite: 'Lax'
+            }
+        ]);
+    } catch (error) {
+        console.warn(`⚠️ [系统] PayPal 英文 cookie 预设失败: ${error.message}`);
+    }
+}
+
 function buildDebugScreenshotPath(prefix) {
     const screenshotDir = path.join(__dirname, 'debug_screenshots', '激活');
     fs.mkdirSync(screenshotDir, { recursive: true });
@@ -151,6 +193,7 @@ function getAvailableDebugPage(context, preferredPage) {
     return alivePages.length ? alivePages[alivePages.length - 1] : null;
 }
 
+//对错误界面进行截图
 async function captureDebugScreenshot(context, preferredPage, prefix, label = '异常截图') {
     const targetPage = getAvailableDebugPage(context, preferredPage);
     if (!targetPage) {
@@ -170,6 +213,7 @@ async function captureDebugScreenshot(context, preferredPage, prefix, label = '�
     return screenshotPath;
 }
 
+// 断链配置
 async function isConnectionClosedPage(page) {
     try {
         const bodyText = String(await page.textContent('body', { timeout: 3000 }).catch(() => '') || '');
@@ -183,6 +227,7 @@ async function isConnectionClosedPage(page) {
     }
 }
 
+// 自动重新加载
 async function recoverConnectionClosed(page, fallbackUrl = '') {
     if (!(await isConnectionClosedPage(page))) {
         return false;
@@ -207,15 +252,21 @@ async function recoverConnectionClosed(page, fallbackUrl = '') {
 }
 /**
  * Main Automation logic
+ * @param {Object} options - 可选配置
+ * @param {string} options.checkoutUrl - 外部传入的 Stripe Checkout URL（跳过 API 创建订单）
+ * @param {boolean} options.debugMode - 调试模式（PayPal 触发后暂停，不自动填表）
  */
-async function run() {
+async function run(options = {}) {
+    const { checkoutUrl: externalCheckoutUrl, debugMode = false } = options;
     // 切到有头模式调试：HEADFUL=1 node server.js 或 HEADFUL=1 node index.js
     const DEBUG_HEADFUL = process.env.HEADFUL === '1';
+    const ENABLE_STRICT_FINGERPRINT = process.env.STRICT_FINGERPRINT === '1';
     // 选择真实 Google Chrome：CHROMIUM_CHANNEL=chrome（机器需安装 Google Chrome）
     const CHROMIUM_CHANNEL = (process.env.CHROMIUM_CHANNEL || '').trim();
 
     const launchArgs = [
-        '--disable-blink-features=AutomationControlled'
+        '--disable-blink-features=AutomationControlled',
+        '--lang=en-US'
     ];
     if (!DEBUG_HEADFUL) {
         launchArgs.push('--no-sandbox', '--disable-setuid-sandbox');
@@ -230,26 +281,34 @@ async function run() {
     if (DEBUG_HEADFUL) {
         console.log(`🧪 [Step 0] 启动 Stealth 浏览器环境... (HEADFUL=1，有头模式${CHROMIUM_CHANNEL ? `, channel=${CHROMIUM_CHANNEL}` : ''})`);
     }
-    // 通过本地代理桥接连接远程代理（需先走 VPN）
+    // 代理配置：直接走本地 VPN
     let proxyBridgeStarted = false;
     if (CONFIG.proxy) {
-        try {
-            const bridge = await createProxyBridge({
-                remoteProxy: CONFIG.proxy,
-                localPort: 10808,
-                vpnPort: 7897,
-                useVpn: true,
-                vpnType: 'http'
-            });
-            proxyBridgeStarted = true;
-            launchOptions.proxy = { server: bridge.localProxy };
-            console.log(`🌐 [系统] 代理桥接已启动，Playwright 使用 ${bridge.localProxy}`);
-        } catch (e) {
-            console.warn(`⚠️  [系统] 代理桥接启动失败: ${e.message}，将尝试直连`);
-            const proxyConfig = buildPlaywrightProxy(CONFIG.proxy);
-            if (proxyConfig) {
-                launchOptions.proxy = proxyConfig;
-                console.log(`🌐 [系统] 代理已配置（直连模式）`);
+        // 如果配置的是本地 VPN 端口，直接使用，不需要桥接
+        const isLocalVpn = CONFIG.proxy.includes('127.0.0.1:7897') || CONFIG.proxy.includes('localhost:7897');
+        if (isLocalVpn) {
+            launchOptions.proxy = { server: 'http://127.0.0.1:7897' };
+            console.log(`🌐 [系统] 直接使用本地 VPN 代理: http://127.0.0.1:7897`);
+        } else {
+            // 远程代理需要通过桥接（先走 VPN 再连远程）
+            try {
+                const bridge = await createProxyBridge({
+                    remoteProxy: CONFIG.proxy,
+                    localPort: 10808,
+                    vpnPort: 7897,
+                    useVpn: true,
+                    vpnType: 'http'
+                });
+                proxyBridgeStarted = true;
+                launchOptions.proxy = { server: bridge.localProxy };
+                console.log(`🌐 [系统] 代理桥接已启动，Playwright 使用 ${bridge.localProxy}`);
+            } catch (e) {
+                console.warn(`⚠️  [系统] 代理桥接启动失败: ${e.message}，将尝试直连`);
+                const proxyConfig = buildPlaywrightProxy(CONFIG.proxy);
+                if (proxyConfig) {
+                    launchOptions.proxy = proxyConfig;
+                    console.log(`🌐 [系统] 代理已配置（直连模式）`);
+                }
             }
         }
     }
@@ -311,11 +370,11 @@ async function run() {
     console.log(`🌴 [指纹] 使用 ${fingerprintConfig.region} 指纹 (${fingerprintConfig.hardwareConcurrency}核/${fingerprintConfig.deviceMemory}GB)`);
 
     // 使用加州指纹创建上下文
-    const { context } = await CaliforniaFingerprint.createCaliforniaContext(browser, fingerprintConfig);
+    const { context, config: effectiveFingerprintConfig } = await CaliforniaFingerprint.createCaliforniaContext(browser, fingerprintConfig);
 
-    // ============= 严格指纹伪装（覆盖 hCaptcha invisible / PerimeterX 主要检测点）=============
-    await context.addInitScript((injectedChromeMajor) => {
-        // ---- 工具：用 defineProperty 改 Navigator.prototype 上的 getter（比改 navigator 实例更难被识破） ----
+    // ============= 额外严格指纹清理（默认关闭，不再覆盖 CaliforniaFingerprint 的随机 profile）=============
+    if (ENABLE_STRICT_FINGERPRINT) {
+        await context.addInitScript((config) => {
         const NavProto = Object.getPrototypeOf(navigator);
         const ScrProto = Object.getPrototypeOf(screen);
         const safeDefine = (obj, key, getter) => {
@@ -324,134 +383,15 @@ async function run() {
             } catch (_) { /* ignore */ }
         };
 
-        // 1) 彻底隐藏 webdriver（在 prototype 层删 + 在 navigator 上 set undefined）
         try { delete Object.getPrototypeOf(navigator).webdriver; } catch (_) { }
         safeDefine(NavProto, 'webdriver', () => undefined);
         try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true }); } catch (_) { }
 
-        // 2) navigator.userAgentData 与 sec-ch-ua / UA 一致
         try {
-            const uaData = {
-                brands: [
-                    { brand: 'Not)A;Brand', version: '8' },
-                    { brand: 'Chromium', version: String(injectedChromeMajor) },
-                    { brand: 'Google Chrome', version: String(injectedChromeMajor) }
-                ],
-                mobile: false,
-                platform: 'Windows',
-                getHighEntropyValues: (hints) => Promise.resolve({
-                    architecture: 'x86',
-                    bitness: '64',
-                    brands: uaData.brands,
-                    fullVersionList: uaData.brands.map(b => ({ brand: b.brand, version: `${b.version}.0.0.0` })),
-                    mobile: false,
-                    model: '',
-                    platform: 'Windows',
-                    platformVersion: '15.0.0',
-                    uaFullVersion: `${injectedChromeMajor}.0.0.0`,
-                    wow64: false
-                }),
-                toJSON: () => ({ brands: uaData.brands, mobile: uaData.mobile, platform: uaData.platform })
-            };
-            safeDefine(NavProto, 'userAgentData', () => uaData);
-        } catch (_) { }
-
-        // 3) plugins / mimeTypes 用 Proxy + 真实 prototype（PluginArray / MimeTypeArray）
-        try {
-            const pdfMime = Object.create(MimeType.prototype);
-            Object.defineProperties(pdfMime, {
-                type: { get: () => 'application/pdf' },
-                suffixes: { get: () => 'pdf' },
-                description: { get: () => 'Portable Document Format' }
-            });
-            const pdfPlugin = Object.create(Plugin.prototype);
-            Object.defineProperties(pdfPlugin, {
-                name: { get: () => 'Chrome PDF Plugin' },
-                filename: { get: () => 'internal-pdf-viewer' },
-                description: { get: () => 'Portable Document Format' },
-                length: { get: () => 1 },
-                0: { get: () => pdfMime }
-            });
-            pdfPlugin.item = () => pdfMime;
-            pdfPlugin.namedItem = () => pdfMime;
-
-            const fakePlugins = Object.create(PluginArray.prototype);
-            Object.defineProperties(fakePlugins, {
-                length: { get: () => 1 },
-                0: { get: () => pdfPlugin }
-            });
-            fakePlugins.item = () => pdfPlugin;
-            fakePlugins.namedItem = (n) => n === pdfPlugin.name ? pdfPlugin : null;
-            fakePlugins.refresh = () => { };
-
-            const fakeMimeTypes = Object.create(MimeTypeArray.prototype);
-            Object.defineProperties(fakeMimeTypes, {
-                length: { get: () => 1 },
-                0: { get: () => pdfMime }
-            });
-            fakeMimeTypes.item = () => pdfMime;
-            fakeMimeTypes.namedItem = (n) => n === pdfMime.type ? pdfMime : null;
-
-            safeDefine(NavProto, 'plugins', () => fakePlugins);
-            safeDefine(NavProto, 'mimeTypes', () => fakeMimeTypes);
-        } catch (_) { }
-
-        // 4) 语言、平台、硬件
-        safeDefine(NavProto, 'languages', () => ['en-US', 'en']);
-        safeDefine(NavProto, 'language', () => 'en-US');
-        safeDefine(NavProto, 'platform', () => 'Win32');
-        safeDefine(NavProto, 'hardwareConcurrency', () => 8);
-        safeDefine(NavProto, 'deviceMemory', () => 8);
-        safeDefine(NavProto, 'maxTouchPoints', () => 0);
-        safeDefine(NavProto, 'vendor', () => 'Google Inc.');
-
-        // 5) navigator.connection
-        try {
-            const conn = { effectiveType: '4g', rtt: 100, downlink: 10, saveData: false };
+            const conn = (config && config.connection) || { effectiveType: '4g', rtt: 100, downlink: 10, saveData: false };
             safeDefine(NavProto, 'connection', () => conn);
         } catch (_) { }
 
-        // 6) window.chrome（接近真实 Chrome 的样子）
-        try {
-            const fakeChrome = {
-                app: {
-                    isInstalled: false,
-                    InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                    RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-                    getDetails: () => null,
-                    getIsInstalled: () => false
-                },
-                runtime: {
-                    OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-                    OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
-                    PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                    PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                    PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-                    RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
-                    connect: () => { },
-                    sendMessage: () => { }
-                },
-                csi: () => ({ onloadT: Date.now(), pageT: Date.now() - 1000, startE: Date.now() - 2000, tran: 15 }),
-                loadTimes: () => ({
-                    requestTime: Date.now() / 1000 - 2,
-                    startLoadTime: Date.now() / 1000 - 1.5,
-                    commitLoadTime: Date.now() / 1000 - 1,
-                    finishDocumentLoadTime: Date.now() / 1000 - 0.5,
-                    finishLoadTime: Date.now() / 1000,
-                    firstPaintTime: Date.now() / 1000 - 0.3,
-                    firstPaintAfterLoadTime: 0,
-                    navigationType: 'Other',
-                    wasFetchedViaSpdy: true,
-                    wasNpnNegotiated: true,
-                    npnNegotiatedProtocol: 'h2',
-                    wasAlternateProtocolAvailable: false,
-                    connectionInfo: 'h2'
-                })
-            };
-            Object.defineProperty(window, 'chrome', { value: fakeChrome, writable: true, configurable: true });
-        } catch (_) { }
-
-        // 7) permissions.query 完整化（notifications / clipboard / geolocation 都返回 prompt 不是 denied）
         try {
             const origQuery = navigator.permissions.query.bind(navigator.permissions);
             navigator.permissions.query = (params) => {
@@ -462,88 +402,17 @@ async function run() {
             };
         } catch (_) { }
 
-        // 8) screen 一致性
-        safeDefine(ScrProto, 'availHeight', () => 1032);
-        safeDefine(ScrProto, 'availWidth', () => 1920);
-        safeDefine(ScrProto, 'colorDepth', () => 24);
-        safeDefine(ScrProto, 'pixelDepth', () => 24);
-        safeDefine(ScrProto, 'width', () => 1920);
-        safeDefine(ScrProto, 'height', () => 1080);
-
-        // 9) Canvas：toDataURL & getImageData 加微噪声
         try {
-            const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-            HTMLCanvasElement.prototype.toDataURL = function (...args) {
-                const ctx = this.getContext('2d');
-                if (ctx) {
-                    try {
-                        const w = this.width, h = this.height;
-                        if (w > 0 && h > 0) {
-                            // 改 1 像素的 alpha 即可改变 hash，但视觉无影响
-                            const data = ctx.getImageData(0, 0, 1, 1);
-                            data.data[3] = Math.max(1, data.data[3] - 1);
-                            ctx.putImageData(data, 0, 0);
-                        }
-                    } catch (_) { }
-                }
-                return origToDataURL.apply(this, args);
-            };
-            const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-            CanvasRenderingContext2D.prototype.getImageData = function (...args) {
-                const imageData = origGetImageData.apply(this, args);
-                try {
-                    if (imageData && imageData.data && imageData.data.length > 16) {
-                        // 在前 4 像素的 RGBA 上加 ±1 微噪声
-                        for (let i = 0; i < 16; i += 4) {
-                            imageData.data[i] = Math.max(0, Math.min(255, imageData.data[i] + (Math.random() < 0.5 ? -1 : 1)));
-                        }
-                    }
-                } catch (_) { }
-                return imageData;
-            };
-        } catch (_) { }
-
-        // 10) WebGL：伪装 vendor / renderer + 关键参数加微噪声
-        try {
-            const fakeWebGL = (gl) => {
-                const origGetParameter = gl.getParameter.bind(gl);
-                gl.getParameter = function (param) {
-                    // UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
-                    if (param === 0x9245) return 'Google Inc. (Intel)';
-                    if (param === 0x9246) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                    return origGetParameter(param);
-                };
-            };
-            const origGetCtx = HTMLCanvasElement.prototype.getContext;
-            HTMLCanvasElement.prototype.getContext = function (type, ...args) {
-                const ctx = origGetCtx.call(this, type, ...args);
-                if (ctx && (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')) {
-                    try { fakeWebGL(ctx); } catch (_) { }
-                }
-                return ctx;
-            };
-        } catch (_) { }
-
-        // 11) AudioContext 指纹微噪声（hCaptcha 也用这个）
-        try {
-            const origCreateAnalyser = (window.OfflineAudioContext || window.webkitOfflineAudioContext || window.AudioContext).prototype.createAnalyser;
-            if (origCreateAnalyser) {
-                const Proto = (window.OfflineAudioContext || window.webkitOfflineAudioContext || window.AudioContext).prototype;
-                Proto.createAnalyser = function () {
-                    const analyser = origCreateAnalyser.call(this);
-                    const origGetFloat = analyser.getFloatFrequencyData.bind(analyser);
-                    analyser.getFloatFrequencyData = function (array) {
-                        origGetFloat(array);
-                        for (let i = 0; i < array.length; i += 1) {
-                            array[i] += (Math.random() - 0.5) * 0.0001;
-                        }
-                    };
-                    return analyser;
-                };
+            if (config && config.screen) {
+                safeDefine(ScrProto, 'availHeight', () => config.screen.availHeight || config.screen.height - 48);
+                safeDefine(ScrProto, 'availWidth', () => config.screen.availWidth || config.screen.width);
+                safeDefine(ScrProto, 'colorDepth', () => config.screen.colorDepth || 24);
+                safeDefine(ScrProto, 'pixelDepth', () => config.screen.pixelDepth || 24);
+                safeDefine(ScrProto, 'width', () => config.screen.width);
+                safeDefine(ScrProto, 'height', () => config.screen.height);
             }
         } catch (_) { }
 
-        // 12) iframe 的 navigator/window 也要套用同样的 patch（hCaptcha 自己跑在 iframe 里）
         try {
             const origCreate = Document.prototype.createElement;
             Document.prototype.createElement = function (tag, ...rest) {
@@ -567,7 +436,6 @@ async function run() {
             };
         } catch (_) { }
 
-        // 13) 删除 ChromeDriver 痕迹（cdc_*、$cdc_*）
         try {
             for (const key of Object.keys(window)) {
                 if (/^(cdc_|\$cdc_|_phantom|callPhantom|webdriver-|driver-)/.test(key)) {
@@ -576,7 +444,6 @@ async function run() {
             }
         } catch (_) { }
 
-        // 14) Notification.permission 默认 'default'（headless 下可能是 'denied'）
         try {
             if (typeof Notification !== 'undefined') {
                 const origPerm = Object.getOwnPropertyDescriptor(Notification, 'permission');
@@ -585,7 +452,28 @@ async function run() {
                 }
             }
         } catch (_) { }
-    }, chromeMajor);
+
+        }, effectiveFingerprintConfig);
+    }
+
+    await forcePayPalEnglishCookies(context);
+
+    await context.route('**/*', async (route) => {
+        const request = route.request();
+        if (request.resourceType() === 'document') {
+            const forcedUrl = forceEnglishPayPalLocaleUrl(request.url());
+            const forcedHeaders = {
+                ...request.headers(),
+                'accept-language': 'en-US,en;q=0.9'
+            };
+            if (forcedUrl !== request.url()) {
+                console.log(`[PayPal Locale] force en_US: ${request.url()} -> ${forcedUrl}`);
+                return route.continue({ url: forcedUrl, headers: forcedHeaders });
+            }
+            return route.continue({ headers: forcedHeaders });
+        }
+        return route.continue();
+    });
 
     let page = null;
     let stopInactivityWatcher = null;
@@ -614,18 +502,41 @@ async function run() {
         }
 
         // --- Phase 1: API Initialization ---
-        const gpt = new ChatGPTService(context.request, CONFIG.chatgptToken, CONFIG.stripeKey);
-        // (静默) 创建订单（成功/失败由 chatgpt.js 内打印）
-        const paypalUrl = await gpt.getPayPalApprovalUrl(CONFIG.billing);
+        let paypalUrl;
+        if (externalCheckoutUrl) {
+            // 外部传入 Checkout URL，跳过 API 创建订单
+            console.log("📦 [步骤] 使用外部传入的 Checkout URL，跳过订单创建...");
+            paypalUrl = externalCheckoutUrl;
+        } else {
+            const gpt = new ChatGPTService(context.request, CONFIG.chatgptToken, CONFIG.stripeKey);
+            // (静默) 创建订单（成功/失败由 chatgpt.js 内打印）
+            paypalUrl = await gpt.getPayPalApprovalUrl(CONFIG.billing);
 
-        if (!paypalUrl) {
-            throw new Error("无法获取 PayPal 审批链接");
+            if (!paypalUrl) {
+                throw new Error("无法获取 PayPal 审批链接");
+            }
         }
 
         // --- Phase 2: Automation Setup ---
         page = await context.newPage();
         page.on('close', () => {
             console.warn(`⚠️ [系统] 当前页面已关闭，关闭前最后 URL: ${page.url()}`);
+        });
+        page.on('framenavigated', async (frame) => {
+            if (frame !== page.mainFrame()) return;
+            const currentUrl = frame.url();
+            if (!/paypal\.com/i.test(currentUrl)) return;
+            try {
+                const localeProbe = await page.evaluate(() => ({
+                    url: location.href,
+                    htmlLang: document.documentElement.lang,
+                    navLanguage: navigator.language,
+                    navLanguages: navigator.languages
+                })).catch(() => null);
+                if (localeProbe) {
+                    console.log(`[PayPal Locale] page=${JSON.stringify(localeProbe)}`);
+                }
+            } catch (_) { /* ignore */ }
         });
         await page.route('**/auth/validatecaptcha', async route => {
             // 如果请求是针对验证页面的，返回一个空白的 HTML
@@ -1304,6 +1215,15 @@ async function run() {
 
         // (静默) 已触发 PayPal 流程
         await page.waitForTimeout(2000);
+
+        // 调试模式：PayPal 触发后暂停，等待用户手动操作
+        if (debugMode) {
+            console.log("\n🔧 [调试模式] PayPal 流程已触发，脚本暂停。");
+            console.log("   当前 URL:", page.url());
+            console.log("   按 Ctrl+C 退出，或在浏览器中手动操作...\n");
+            // 无限等待，让用户手动调试
+            await new Promise(() => {});
+        }
 
 
         // 通用：等待元素可见，超时则刷新一次再等（避免 Stripe / PayPal 偶发空白）
@@ -2649,4 +2569,15 @@ async function run() {
     }
 }
 
-run();
+// 导出 run 函数供外部调用
+module.exports = { run };
+
+// 仅当直接运行时执行（非 require 导入）
+if (require.main === module) {
+    // 支持命令行参数：node index.js [checkoutUrl] [--debug]
+    const args = process.argv.slice(2);
+    const debugMode = args.includes('--debug');
+    const checkoutUrl = args.find(arg => arg.startsWith('http'));
+
+    run({ checkoutUrl, debugMode });
+}

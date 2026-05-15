@@ -54,17 +54,17 @@ const env = {
 
     // 真实的加州洛杉矶地址信息
     BILLING_COUNTRY: process.env.BILLING_COUNTRY || 'US',
-    BILLING_ADDRESS: process.env.BILLING_ADDRESS || 'Address: 20 CR 161',
-    BILLING_CITY: process.env.BILLING_CITY || 'OXFORD',
+    BILLING_ADDRESS: process.env.BILLING_ADDRESS || '15810 Gale Ave',
+    BILLING_CITY: process.env.BILLING_CITY || 'Hacienda Heights',
     BILLING_STATE: process.env.BILLING_STATE || 'CA',
-    BILLING_ZIP: process.env.BILLING_ZIP || '38655,US',
+    BILLING_ZIP: process.env.BILLING_ZIP || '91745',
     BILLING_NAME: process.env.BILLING_NAME || 'DOMINIQUE CAMPBELL',
     BILLING_EMAIL: process.env.BILLING_EMAIL || '', // 会自动生成随机邮箱
 
     // 测试银行卡信息（Stripe 测试卡号）
-    CARD_NUMBER: process.env.CARD_NUMBER || '4859540152866744',
-    CARD_EXPIRY: process.env.CARD_EXPIRY || '03/30',
-    CARD_CVC: process.env.CARD_CVC || '739',
+    CARD_NUMBER: process.env.CARD_NUMBER || '4859540166445568',
+    CARD_EXPIRY: process.env.CARD_EXPIRY || '02/30',
+    CARD_CVC: process.env.CARD_CVC || '532',
 
     // PayPal 和短信
     PAYPAL_PASSWORD: process.env.PAYPAL_PASSWORD || '123qwe456qsd',
