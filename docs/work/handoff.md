@@ -4,53 +4,80 @@
 
 ## 当前任务目标
 
-回退 PayPal 自动化链路中的强制英文和主动挑战处理，保留只读诊断，用于排除“自动化额外干预”导致 PayPal 风控的变量。
+继续调试 PayPal 自动化链路，重点是：
+
+- PayPal 页面语言保持英文。
+- PayPal 邮箱/手机号/卡号使用更稳定的 `fill()` 路径。
+- 日志足够说明当前阶段，但不输出冗长 URL/JSON。
+- 支持从 PayPal 支付信息页单独运行专项测试。
 
 ## 已完成
 
-- `index.js`
-  - 不再改写 PayPal URL。
-  - 不再覆盖 document `accept-language`。
-  - 不再预设 PayPal 英文 cookie。
-  - 不再使用 `--lang=en-US`。
-  - 不再拦截 `/auth/validatecaptcha` 返回空白页。
-  - 验证/挑战 iframe 只记录诊断，不再自动点击或拖动。
-- `chatgpt.js`
-  - 订单创建请求恢复为只发送 `token` 和 `plus`。
-  - 移除英文/美国地区请求头和 payload 字段。
-- `lib/california-fingerprint.js`
-  - 移除 `navigator.language` / `navigator.languages` 的硬编码注入。
-  - Playwright options 不再显式设置 `Accept-Language` 或 `locale`。
-- `test/test_fingerprint_guard.js`
-  - 更新断言：不再期望显式 `Accept-Language` header。
+### `index.js`
 
-## 2026-05-15 追加变更
+- PayPal URL 仍会被强制为：
+  - `country.x=US`
+  - `locale.x=en_US`
+- 新增 PayPal 语言检测与切换：
+  - 在等待 `Create an Account` 前检测页面是否中文。
+  - 如果中文，点击页面底部 English 入口。
+  - 刷新重试后也会再次检测。
+- PayPal locale 日志已收敛：
+  - 默认只输出 path、htmlLang、country、locale。
+  - 完整 JSON 只在 `DEBUG_PAYPAL_LOCALE=1` 时输出。
+- PayPal 输入策略：
+  - 卡号：`fill()`。
+  - PayPal 登录邮箱：`fill()`。
+  - PayPal 支付表单邮箱：`fill()`。
+  - PayPal 手机号：`fill()`。
+  - 姓名、地址、密码仍保留原手动输入节奏。
+- Stripe 提交后增加 HumanSecurity 等待提示：
+  - `⏳ [风控] Stripe 提交后等待 HumanSecurity 6-8 秒...`
+  - 等待行为未改。
 
-- 已按用户要求恢复：
-  - `**/auth/validatecaptcha` 空白页拦截。
-  - PayPal 验证按钮/滑块自动处理 `solveSlider()`。
-- 未恢复：
-  - PayPal URL 强制追加 `locale.x` / `country.x`。
-  - document `accept-language` 覆盖。
-  - PayPal 英文 cookie 预设。
-  - Chrome `--lang=en-US`。
+### 测试与文档
+
+- 新增 `test/test_paypal_payment_form.js`
+  - 从 PayPal signup / 支付信息页开始测试。
+  - 支持 `--submit`、`--headless`、`--keep-open`。
+  - 支持 `PAYPAL_SIGNUP_URL`。
+  - 默认只填表校验，不提交。
+- 新增 `test/PROJECT_MAP.md`
+  - 说明 `test/` 下每个测试文件用途和参数。
+- 新增/更新项目记录：
+  - `docs/project/2026-05-15_PayPal支付信息页专项测试.md`
+  - `docs/project/2026-05-15_PayPal中文页面自动切换英文.md`
+  - `docs/work/work-log.md`
 
 ## 验证结果
 
-- 语法检查通过：
-  - `node --check .\index.js`
-  - `node --check .\chatgpt.js`
-  - `node --check .\lib\california-fingerprint.js`
-- `node .\test\test_fingerprint_guard.js` 未通过：
-  - 当前失败：`limited random generation should select from at least two complete profiles`
-  - 原因：当前 `lib/california-fingerprint.js` 只保留一个 `FINGERPRINT_PROFILES` profile。
-  - 该失败不是本次回退引入的强制英文问题。
+- `node --check index.js`：通过。
+- `node --check test\test_paypal_payment_form.js`：通过。
+- 静态断言已确认：
+  - PayPal 邮箱/手机号 fill 模式存在。
+  - PayPal 中文页检测与 English 点击逻辑存在。
+  - PayPal locale 默认简洁日志与 `DEBUG_PAYPAL_LOCALE` 详细日志开关存在。
 
-## 下一步建议
+## 当前注意点
 
-1. 用同一个 `ba_token/token` 分别跑：
-   - 本地手动 Chrome。
-   - Playwright headful + real Chrome channel。
-   - Playwright 持久化用户目录。
-2. 对比 `[PayPal Locale] page=...`、challenge iframe、cookie、UA/UA-CH、headless/headful、代理出口。
-3. 如果仍只在自动化触发风控，优先减少自动化特征，而不是继续改语言或 URL 参数。
+- `index.js` 当前工作区已有多次未提交变更，改动集中在 PayPal locale、语言切换、挑战处理、输入策略和日志。
+- PayPal URL 和日志里可能包含 `ba_token` / `token` / `ctxId`，默认日志已避免直接打印完整 URL。
+- 如果需要完整诊断，运行前设置：
+
+```powershell
+$env:DEBUG_PAYPAL_LOCALE="1"
+```
+
+## 推荐下一步
+
+1. 用真实流程跑一次，确认中文页会自动切换英文。
+2. 观察日志是否只保留简洁摘要。
+3. 若仍卡在 `Create an Account`，优先检查：
+   - 页面是否已经是英文。
+   - `Create an Account` 文案是否变体。
+   - 是否进入登录页/风控页而不是账户创建页。
+4. 若支付表单填写失败，用：
+
+```powershell
+node .\test\test_paypal_payment_form.js "<PayPal signup URL>" --keep-open
+```

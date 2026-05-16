@@ -111,6 +111,7 @@ const CONFIG = {
     },
     proxy: process.env.PROXY || ""
 };
+const DEBUG_PAYPAL_LOCALE = process.env.DEBUG_PAYPAL_LOCALE === '1' || process.env.DEBUG_PAYPAL_LOCALE === 'true';
 
 function buildPlaywrightProxy(proxyValue) {
     if (!proxyValue) return null;
@@ -131,6 +132,75 @@ function buildPlaywrightProxy(proxyValue) {
     } catch (error) {
         console.warn(`[!] [系统] 代理 URL 解析失败，将按原始值使用: ${error.message}`);
         return { server: proxyValue };
+    }
+}
+
+function getPayPalLocaleTrace(rawUrl) {
+    try {
+        const url = new URL(rawUrl);
+        const stateRaw = url.searchParams.get('state') || '';
+        const stateParams = stateRaw ? new URLSearchParams(stateRaw.startsWith('?') ? stateRaw.slice(1) : stateRaw) : null;
+        return {
+            host: url.hostname,
+            path: url.pathname,
+            country: url.searchParams.get('country.x'),
+            locale: url.searchParams.get('locale.x'),
+            langTgl: url.searchParams.get('langTgl'),
+            token: url.searchParams.get('token') || url.searchParams.get('ctxId'),
+            baToken: url.searchParams.get('ba_token'),
+            stateCountry: stateParams?.get('country.x') || null,
+            stateLocale: stateParams?.get('locale.x') || null,
+            stateToken: stateParams?.get('token') || null,
+            stateBaToken: stateParams?.get('ba_token') || null
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function logPayPalLocaleTrace(label, rawUrl) {
+    if (!/paypal\.com/i.test(String(rawUrl))) return;
+    const trace = getPayPalLocaleTrace(rawUrl);
+    if (trace) {
+        console.log(`[PayPal Locale] ${label}: ${formatPayPalLocaleSummary(trace)}`);
+        if (DEBUG_PAYPAL_LOCALE) {
+            console.log(`[PayPal Locale Debug] ${label}=${JSON.stringify(trace)}`);
+        }
+    }
+}
+
+function formatPayPalLocaleSummary(traceOrUrl) {
+    const trace = typeof traceOrUrl === 'string' ? getPayPalLocaleTrace(traceOrUrl) : traceOrUrl;
+    if (!trace) return '(unknown)';
+
+    const locale = trace.locale || trace.stateLocale || '-';
+    const country = trace.country || trace.stateCountry || '-';
+    const langTgl = trace.langTgl ? ` langTgl=${trace.langTgl}` : '';
+    return `${trace.path || '/'} country=${country} locale=${locale}${langTgl}`;
+}
+
+function formatPayPalPageLocaleSummary(probe) {
+    if (!probe) return '(unknown)';
+    const trace = getPayPalLocaleTrace(probe.url || '');
+    const path = trace?.path || '(unknown)';
+    const locale = probe.hiddenLocale || trace?.locale || trace?.stateLocale || '-';
+    const country = trace?.country || trace?.stateCountry || '-';
+    const htmlLang = probe.htmlLang || '-';
+    return `${path} htmlLang=${htmlLang} country=${country} locale=${locale}`;
+}
+
+function forcePayPalUsLocaleUrl(rawUrl) {
+    try {
+        const url = new URL(rawUrl);
+        const host = url.hostname.toLowerCase();
+        const isPayPalPageHost = host === 'paypal.com' || host === 'www.paypal.com';
+        if (!isPayPalPageHost) return rawUrl;
+
+        url.searchParams.set('country.x', 'US');
+        url.searchParams.set('locale.x', 'en_US');
+        return url.toString();
+    } catch (_) {
+        return rawUrl;
     }
 }
 
@@ -411,6 +481,21 @@ async function run(options = {}) {
         }, effectiveFingerprintConfig);
     }
 
+    await context.route('**/*', async (route) => {
+        const request = route.request();
+        if (request.resourceType() !== 'document') {
+            return route.continue();
+        }
+
+        const originalUrl = request.url();
+        const forcedUrl = forcePayPalUsLocaleUrl(originalUrl);
+        if (forcedUrl !== originalUrl) {
+            console.log(`[PayPal Locale] force US/en_US: ${formatPayPalLocaleSummary(originalUrl)} -> ${formatPayPalLocaleSummary(forcedUrl)}`);
+            return route.continue({ url: forcedUrl });
+        }
+        return route.continue();
+    });
+
     let page = null;
     let stopInactivityWatcher = null;
 
@@ -452,6 +537,12 @@ async function run(options = {}) {
                 throw new Error("无法获取 PayPal 审批链接");
             }
         }
+        const forcedPayPalUrl = forcePayPalUsLocaleUrl(paypalUrl);
+        if (forcedPayPalUrl !== paypalUrl) {
+            console.log(`[PayPal Locale] force initial US/en_US: ${formatPayPalLocaleSummary(paypalUrl)} -> ${formatPayPalLocaleSummary(forcedPayPalUrl)}`);
+            paypalUrl = forcedPayPalUrl;
+        }
+        logPayPalLocaleTrace('initial-paypal-url', paypalUrl);
 
         // --- Phase 2: Automation Setup ---
         page = await context.newPage();
@@ -462,6 +553,7 @@ async function run(options = {}) {
             if (frame !== page.mainFrame()) return;
             const currentUrl = frame.url();
             if (!/paypal\.com/i.test(currentUrl)) return;
+            logPayPalLocaleTrace('navigation', currentUrl);
             try {
                 const localeProbe = await page.evaluate(() => ({
                     url: location.href,
@@ -470,7 +562,10 @@ async function run(options = {}) {
                     navLanguages: navigator.languages
                 })).catch(() => null);
                 if (localeProbe) {
-                    console.log(`[PayPal Locale] page=${JSON.stringify(localeProbe)}`);
+                    console.log(`[PayPal Locale] page: ${formatPayPalPageLocaleSummary(localeProbe)}`);
+                    if (DEBUG_PAYPAL_LOCALE) {
+                        console.log(`[PayPal Locale Debug] page=${JSON.stringify(localeProbe)}`);
+                    }
                 }
             } catch (_) { /* ignore */ }
         });
@@ -824,6 +919,92 @@ async function run(options = {}) {
             } catch (e) {
                 if (e.message.includes("监测到") || e.message.includes("被拒绝") || e.message.includes("拦截")) throw e;
             }
+        };
+
+        const ensurePayPalEnglishLanguage = async () => {
+            if (!/paypal\.com/i.test(String(page.url() || ''))) {
+                return false;
+            }
+
+            const getLanguageProbe = async () => page.evaluate(() => {
+                const text = document.body ? String(document.body.innerText || '') : '';
+                return {
+                    url: location.href,
+                    title: document.title || '',
+                    htmlLang: document.documentElement.lang || '',
+                    hiddenLocale: document.querySelector('input[name="locale.x"]')?.value || '',
+                    hasEnglishLink: Boolean(document.querySelector('a[data-locale="en_US"], a[lang="en"][href*="locale.x=en_US"]')),
+                    bodySample: text.slice(0, 500)
+                };
+            }).catch(() => null);
+
+            const isChinesePayPalPage = (probe) => {
+                if (!probe) return false;
+                const htmlLang = String(probe.htmlLang || '').toLowerCase();
+                const hiddenLocale = String(probe.hiddenLocale || '').toLowerCase();
+                const url = String(probe.url || '');
+                const text = `${probe.title || ''} ${probe.bodySample || ''}`;
+                return htmlLang.startsWith('zh')
+                    || hiddenLocale.startsWith('zh')
+                    || /locale\.x=zh|country\.x=cn/i.test(url)
+                    || text.includes('登录您的PayPal账户')
+                    || text.includes('创建账户')
+                    || text.includes('下一步')
+                    || text.includes('邮箱地址');
+            };
+
+            const beforeProbe = await getLanguageProbe();
+            if (!isChinesePayPalPage(beforeProbe)) {
+                console.log(`[PayPal Locale] ${formatPayPalPageLocaleSummary(beforeProbe)} -> 继续等待 Create an Account`);
+                if (DEBUG_PAYPAL_LOCALE) {
+                    console.log(`[PayPal Locale Debug] language-before=${JSON.stringify(beforeProbe)}`);
+                }
+                return false;
+            }
+
+            console.log(`[PayPal Locale] ${formatPayPalPageLocaleSummary(beforeProbe)} -> 检测到中文，点击 English`);
+            if (DEBUG_PAYPAL_LOCALE) {
+                console.log(`[PayPal Locale Debug] language-before=${JSON.stringify(beforeProbe)}`);
+            }
+            const englishSelectors = [
+                'a[data-locale="en_US"]',
+                'a[lang="en"][href*="locale.x=en_US"]',
+                '.scTrack\\:unifiedlogin-footer-language_en_US',
+                'a:has-text("English")'
+            ];
+
+            for (const selector of englishSelectors) {
+                const englishLink = page.locator(selector).first();
+                if (!await englishLink.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    continue;
+                }
+
+                console.log(`[PayPal Locale] 点击 English 语言入口: ${selector}`);
+                await Promise.all([
+                    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null),
+                    englishLink.click({ force: true })
+                ]);
+                await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => { });
+                await page.waitForTimeout(randomDelay(1000, 1800));
+
+                const afterProbe = await getLanguageProbe();
+                console.log(`[PayPal Locale] ${formatPayPalPageLocaleSummary(afterProbe)} -> 已切换英文`);
+                if (DEBUG_PAYPAL_LOCALE) {
+                    console.log(`[PayPal Locale Debug] language-after=${JSON.stringify(afterProbe)}`);
+                }
+                return true;
+            }
+
+            const fallbackUrl = forcePayPalUsLocaleUrl(page.url());
+            if (fallbackUrl && fallbackUrl !== page.url()) {
+                console.warn(`[PayPal Locale] 未找到 English DOM，使用 URL 兜底切换: ${formatPayPalLocaleSummary(page.url())} -> ${formatPayPalLocaleSummary(fallbackUrl)}`);
+                await page.goto(fallbackUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => { });
+                await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => { });
+                return true;
+            }
+
+            console.warn('[PayPal Locale] 检测到中文页面，但未找到 English DOM，继续按原流程等待。');
+            return false;
         };
 
         async function mouseBreathing(page, duration) {
@@ -2048,7 +2229,7 @@ async function run(options = {}) {
         // 🔑 HAR 关键发现: human_security_submit_await_time = 6013ms
         // HumanSecurity (PerimeterX) 要求提交后至少等待 6 秒才算人类行为
         // 这段时间内保持鼠标轻微颤动（模拟真人盯着页面等待跳转）
-        // (静默) HumanSecurity 6s 风控等待
+        console.log("⏳ [风控] Stripe 提交后等待 HumanSecurity 6-8 秒...");
         await mouseBreathing(page, randomDelay(6000, 8000));
         // Phase 4: PayPal 账户创建
         // 先等页面加载，刷新一次确保 PayPal 页面干净，再检查滑块
@@ -2056,6 +2237,7 @@ async function run(options = {}) {
         await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => { });
         await solveSlider(); // PayPal 页面的滑块检查
         await checkCriticalErrors();
+        await ensurePayPalEnglishLanguage();
         console.log("⏳ [步骤] 正在等待 PayPal 创建账户按钮出现...");
         // PayPal 偶发只渲染静态欢迎页（"PayPal is the safer, easier way to pay" + 购物袋盾牌图），
         // 此时按钮永远不出现。多刷新几次给 PayPal 重新拉账户表单的机会。
@@ -2077,6 +2259,7 @@ async function run(options = {}) {
                 console.warn(`⚠️ [步骤] 刷新失败: ${e.message}`);
             }
             await solveSlider(); // 如果是 recaptcha_image 错误会向上抛出
+            await ensurePayPalEnglishLanguage();
             createBtnReady = await tryWaitCreateBtn(15000);
         }
         if (!createBtnReady) {
@@ -2097,11 +2280,11 @@ async function run(options = {}) {
         // 等邮箱输入框出现
         console.log("📝 [步骤] 正在填写 PayPal 登录邮箱...");
         await page.waitForTimeout(randomDelay(1000, 2000));
-        // PayPal 字段使用手动输入模式，模拟真人逐字符输入
+        // PayPal 邮箱使用 fill 模式，避免逐字符输入触发格式化/风控抖动
         try {
             const emailInput = page.getByRole('textbox', { name: 'Enter email' });
             await emailInput.waitFor({ state: 'visible', timeout: 10000 });
-            await humanFillInput(page, emailInput, CONFIG.billing.email, false, false);
+            await humanFillInput(page, emailInput, CONFIG.billing.email, false, true);
         } catch (e) {
             await debug.saveOnError(page, 'paypal_email_input');
             throw new Error(`PayPal 邮箱输入框定位失败: ${e.message}`);
@@ -2193,12 +2376,12 @@ async function run(options = {}) {
         // Email + Phone
         const emailField = page.locator('#email');
         if (await emailField.isVisible().catch(() => false)) {
-            await humanFillInput(page, emailField, billing.email, false, false);
+            await humanFillInput(page, emailField, billing.email, false, true);
             await page.waitForTimeout(randomDelay(400, 800));
         }
         const phoneField = page.locator('#phone');
         if (await phoneField.isVisible().catch(() => false)) {
-            await humanFillInput(page, phoneField, billing.smsPhone, false, false);
+            await humanFillInput(page, phoneField, billing.smsPhone, true, false);
             await page.waitForTimeout(randomDelay(400, 800));
         }
         console.log("✅ [步骤] 银行卡与身份信息填写完成。");
@@ -2337,7 +2520,7 @@ async function run(options = {}) {
 
                     if (cleanActual !== cleanExpected && field.expectedValue !== "") {
                         console.warn(`[!] [效验失败] ${field.name} 数据不一致! 预期: ${field.expectedValue}, 实际: ${actualValue}。正在修正...`);
-                        await humanFillInput(page, locator, field.expectedValue, Boolean(field.digitsMode));
+                        await humanFillInput(page, locator, field.expectedValue, Boolean(field.digitsMode), Boolean(field.fastMode));
                         await page.waitForTimeout(500);
                     } else {
                         console.log(`✅ [效验通过] ${field.name}`);
@@ -2351,7 +2534,7 @@ async function run(options = {}) {
             { selector: '#expiryDate', expectedValue: billing.expiry, name: "有效期", digitsMode: true },
             { selector: '#cvv', expectedValue: billing.cvc, name: "安全码", digitsMode: true },
             { selector: '#phone', expectedValue: billing.smsPhone, name: "手机号", digitsMode: true },
-            { selector: '#email', expectedValue: billing.email, name: "邮箱", digitsMode: false },
+            { selector: '#email', expectedValue: billing.email, name: "邮箱", digitsMode: false, fastMode: true },
             { selector: '#password', expectedValue: billing.paypalPassword, name: "密码", digitsMode: false },
         ];
 
