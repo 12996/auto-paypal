@@ -88,24 +88,111 @@ async function withTransaction(callback) {
 function normalizePhonePool(phonePool) {
     return (phonePool || [])
         .filter((item) => item && item.phone)
-        .map((item, index) => [
-            String(item.phone),
-            String(item.key || ''),
-            index,
-            item.is_active === 0 || item.status === 'invalid' ? 0 : 1
-        ]);
+        .map((item, index) => {
+            const status = normalizePhoneStatus(item);
+            return [
+                String(item.phone),
+                String(item.key || ''),
+                index,
+                isPhoneStatusActive(status),
+                status
+            ];
+        });
+}
+
+function normalizePhoneStatus(item = {}) {
+    const rawStatus = String(item.status || '').trim();
+    if (rawStatus === 'normal' || rawStatus === '正常') return '正常';
+    if (rawStatus === 'invalid' || rawStatus === '已报废') return '已报废';
+    if (rawStatus) return rawStatus.slice(0, 32);
+    return item.is_active === 0 ? '已报废' : '正常';
+}
+
+function isPhoneStatusActive(status) {
+    return normalizePhoneStatus({ status }) === '正常' ? 1 : 0;
+}
+
+function boolToTinyInt(value) {
+    return value === true || value === 1 || value === '1' || value === 'true' || value === 'yes' ? 1 : 0;
+}
+
+function normalizeNullableTimestamp(value) {
+    const text = String(value || '').trim();
+    return text || null;
+}
+
+function buildCardPickWhereClause() {
+    return "is_active = 1 AND is_registered = 1 AND is_activated = 0 AND card_number <> '' AND card_expiry <> '' AND card_cvc <> ''";
+}
+
+function buildCardAssetTargetWhere({ cardAssetId, cardKey, cardNumber } = {}) {
+    const numericId = Number(cardAssetId || 0);
+    if (numericId > 0) {
+        return {
+            clause: 'id = ?',
+            params: [numericId]
+        };
+    }
+
+    const normalizedKey = String(cardKey || '').trim();
+    if (normalizedKey) {
+        return {
+            clause: 'card_key = ?',
+            params: [normalizedKey]
+        };
+    }
+
+    const normalizedNumber = String(cardNumber || '').trim();
+    if (normalizedNumber) {
+        return {
+            clause: 'card_number = ?',
+            params: [normalizedNumber]
+        };
+    }
+
+    return null;
+}
+
+function normalizeCardStatus(item = {}) {
+    const rawStatus = String(item.status || '').trim();
+    if (rawStatus === 'normal' || rawStatus === '正常') return '正常';
+    if (rawStatus === 'invalid' || rawStatus === '已报废') return '已报废';
+    if (rawStatus === '兑换异常') return '兑换异常';
+    if (rawStatus) return rawStatus.slice(0, 32);
+    return item.is_active === 0 ? '已报废' : '正常';
+}
+
+function isCardStatusActive(status) {
+    return normalizeCardStatus({ status }) === '正常' ? 1 : 0;
 }
 
 function normalizeCardPool(cardPool) {
     return (cardPool || [])
-        .filter((item) => item && item.number)
-        .map((item, index) => [
-            String(item.number),
-            String(item.expiry || ''),
-            String(item.cvc || ''),
-            index,
-            item.is_active === 0 || item.status === 'invalid' ? 0 : 1
-        ]);
+        .filter((item) => item && (item.card_key || item.key || item.cardKey || item.number || item.card_number))
+        .map((item, index) => {
+            const status = normalizeCardStatus(item);
+            return [
+                String(item.card_key || item.key || item.cardKey || item.number || item.card_number).trim(),
+                boolToTinyInt(item.is_registered ?? item.registered),
+                String(item.number || item.card_number || ''),
+                String(item.expiry || item.card_expiry || ''),
+                String(item.cvc || item.card_cvc || ''),
+                String(item.billing_country || ''),
+                String(item.billing_address || ''),
+                String(item.billing_city || ''),
+                String(item.billing_state || ''),
+                String(item.billing_zip || ''),
+                String(item.billing_name || ''),
+                String(item.card_sms || ''),
+                boolToTinyInt(item.is_activated ?? item.activated),
+                String(item.activation_account || ''),
+                normalizeNullableTimestamp(item.redeemed_at),
+                String(item.remark || ''),
+                index,
+                isCardStatusActive(status),
+                status
+            ];
+        });
 }
 
 function normalizeCdks(cdks) {
@@ -173,8 +260,21 @@ async function ensureLegacyColumns() {
     await ensureColumn('phone_assets', 'created_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP');
     await ensureColumn('phone_assets', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
 
+    await ensureColumn('card_assets', 'card_key', "VARCHAR(64) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'is_registered', 'TINYINT(1) NOT NULL DEFAULT 0');
     await ensureColumn('card_assets', 'card_expiry', "VARCHAR(16) NOT NULL DEFAULT ''");
     await ensureColumn('card_assets', 'card_cvc', "VARCHAR(16) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'billing_country', "VARCHAR(64) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'billing_address', "VARCHAR(255) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'billing_city', "VARCHAR(128) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'billing_state', "VARCHAR(128) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'billing_zip', "VARCHAR(64) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'billing_name', "VARCHAR(128) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'card_sms', "TEXT NULL");
+    await ensureColumn('card_assets', 'is_activated', 'TINYINT(1) NOT NULL DEFAULT 0');
+    await ensureColumn('card_assets', 'activation_account', "VARCHAR(255) NOT NULL DEFAULT ''");
+    await ensureColumn('card_assets', 'redeemed_at', 'TIMESTAMP NULL DEFAULT NULL');
+    await ensureColumn('card_assets', 'remark', 'TEXT NULL');
     await ensureColumn('card_assets', 'usage_count', 'INT NOT NULL DEFAULT 0');
     await ensureColumn('card_assets', 'sort_order', 'INT NOT NULL DEFAULT 0');
     await ensureColumn('card_assets', 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1');
@@ -184,6 +284,22 @@ async function ensureLegacyColumns() {
     await ensureColumn('card_assets', 'locked_by', 'VARCHAR(64) NULL DEFAULT NULL');
     await ensureColumn('card_assets', 'created_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP');
     await ensureColumn('card_assets', 'updated_at', 'TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    await runExecute(
+        `UPDATE card_assets
+         SET card_key = card_number,
+             is_registered = 1,
+             redeemed_at = COALESCE(redeemed_at, created_at)
+         WHERE card_key = ''
+           AND card_number <> ''`
+    );
+    await runExecute(
+        `UPDATE card_assets
+         SET is_registered = 1
+         WHERE is_registered = 0
+           AND card_number <> ''
+           AND card_expiry <> ''
+           AND card_cvc <> ''`
+    );
 
     await ensureColumn('cdk_codes', 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1');
     await ensureColumn('cdk_codes', 'shipped_at', 'TIMESTAMP NULL DEFAULT NULL');
@@ -348,7 +464,25 @@ async function getAdminData() {
              ORDER BY sort_order ASC, id ASC`
         ),
         runQuery(
-            `SELECT card_number, card_expiry, card_cvc, usage_count, is_active, status
+            `SELECT card_key,
+                    is_registered,
+                    card_number,
+                    card_expiry,
+                    card_cvc,
+                    billing_country,
+                    billing_address,
+                    billing_city,
+                    billing_state,
+                    billing_zip,
+                    billing_name,
+                    card_sms,
+                    is_activated,
+                    activation_account,
+                    redeemed_at,
+                    remark,
+                    usage_count,
+                    is_active,
+                    status
              FROM card_assets
              ORDER BY sort_order ASC, id ASC`
         ),
@@ -415,13 +549,28 @@ async function getAdminData() {
                 usage_count: Number(row.usage_count || 0),
                 is_active: Number(row.is_active || 0),
                 status: Number(row.is_active || 0) === 1
-                    ? 'normal'
-                    : String(row.status || 'invalid').trim() || 'invalid'
+                    ? '正常'
+                    : String(row.status || '已报废').trim() || '已报废'
             })),
             card_pool: cardRows.map((row) => ({
+                card_key: row.card_key,
+                is_registered: Number(row.is_registered || 0),
                 number: row.card_number,
                 expiry: row.card_expiry,
                 cvc: row.card_cvc,
+                billing_country: row.billing_country || '',
+                billing_address: row.billing_address || '',
+                billing_city: row.billing_city || '',
+                billing_state: row.billing_state || '',
+                billing_zip: row.billing_zip || '',
+                billing_name: row.billing_name || '',
+                card_sms: row.card_sms || '',
+                is_activated: Number(row.is_activated || 0),
+                activation_account: row.activation_account || '',
+                redeemed_at: row.redeemed_at
+                    ? new Date(row.redeemed_at).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-')
+                    : '',
+                remark: row.remark || '',
                 usage_count: Number(row.usage_count || 0),
                 is_active: Number(row.is_active || 0),
                 status: Number(row.is_active || 0) === 1
@@ -535,11 +684,12 @@ async function saveConfig(config) {
                 { connection }
             );
             await connection.query(
-                `INSERT INTO phone_assets (phone, sms_api_key, sort_order, is_active) VALUES ?
+                `INSERT INTO phone_assets (phone, sms_api_key, sort_order, is_active, status) VALUES ?
                  ON DUPLICATE KEY UPDATE
                     sms_api_key = VALUES(sms_api_key),
                     sort_order = VALUES(sort_order),
-                    is_active = VALUES(is_active)`,
+                    is_active = VALUES(is_active),
+                    status = VALUES(status)`,
                 [phonePool]
             );
         } else {
@@ -547,29 +697,67 @@ async function saveConfig(config) {
         }
 
         if (cardPool.length > 0) {
-            const cardNumbers = cardPool.map((item) => item[0]);
-            const cardPlaceholders = cardNumbers.map(() => '?').join(', ');
+            const cardKeys = cardPool.map((item) => item[0]);
+            const cardPlaceholders = cardKeys.map(() => '?').join(', ');
             await runExecute(
                 `DELETE FROM card_assets
-                 WHERE card_number NOT IN (${cardPlaceholders})`,
-                cardNumbers,
+                 WHERE card_key NOT IN (${cardPlaceholders})`,
+                cardKeys,
                 { connection }
             );
             for (const card of cardPool) {
                 const result = await runExecute(
                     `UPDATE card_assets
-                     SET card_expiry = ?,
+                     SET is_registered = ?,
+                         card_number = ?,
+                         card_expiry = ?,
                          card_cvc = ?,
-                         sort_order = ?,
-                         is_active = ?
-                     WHERE card_number = ?`,
-                    [card[1], card[2], card[3], card[4], card[0]],
+                         billing_country = ?,
+                         billing_address = ?,
+                         billing_city = ?,
+                         billing_state = ?,
+                         billing_zip = ?,
+                         billing_name = ?,
+                         card_sms = ?,
+                         is_activated = ?,
+                         activation_account = ?,
+                          redeemed_at = ?,
+                          remark = ?,
+                          sort_order = ?,
+                          is_active = ?,
+                          status = ?
+                      WHERE card_key = ?`,
+                    [
+                        card[1], card[2], card[3], card[4], card[5], card[6], card[7], card[8],
+                        card[9], card[10], card[11], card[12], card[13], card[14], card[15],
+                        card[16], card[17], card[18], card[0]
+                    ],
                     { connection }
                 );
                 if (result.affectedRows === 0) {
                     await runExecute(
-                        `INSERT INTO card_assets (card_number, card_expiry, card_cvc, sort_order, is_active)
-                         VALUES (?, ?, ?, ?, ?)`,
+                        `INSERT INTO card_assets (
+                            card_key,
+                            is_registered,
+                            card_number,
+                            card_expiry,
+                            card_cvc,
+                            billing_country,
+                            billing_address,
+                            billing_city,
+                            billing_state,
+                            billing_zip,
+                            billing_name,
+                            card_sms,
+                            is_activated,
+                            activation_account,
+                            redeemed_at,
+                            remark,
+                            sort_order,
+                             is_active,
+                             status
+                          )
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                         card,
                         { connection }
                     );
@@ -793,8 +981,11 @@ async function deletePhoneAsset(phone) {
     );
 }
 
-async function deleteCardAsset(cardNumber) {
-    if (!cardNumber) {
+async function deleteCardAsset(cardIdentifier) {
+    const target = cardIdentifier && typeof cardIdentifier === 'object'
+        ? buildCardAssetTargetWhere(cardIdentifier)
+        : buildCardAssetTargetWhere({ cardNumber: cardIdentifier });
+    if (!target) {
         return;
     }
 
@@ -802,20 +993,98 @@ async function deleteCardAsset(cardNumber) {
         `UPDATE card_assets
          SET is_active = 0,
              status = '已报废'
-         WHERE card_number = ?`,
-        [String(cardNumber)]
+         WHERE ${target.clause}`,
+        target.params
+    );
+}
+
+async function deleteCardAssetById(cardAssetId) {
+    return deleteCardAsset({ cardAssetId });
+}
+
+async function markCardAssetActivated(cardAssetId, activationAccount) {
+    if (!cardAssetId) {
+        return;
+    }
+
+    await runExecute(
+        `UPDATE card_assets
+         SET is_activated = 1,
+             activation_account = ?
+         WHERE id = ?`,
+        [String(activationAccount || ''), Number(cardAssetId)]
+    );
+}
+
+async function markCardAssetRegistered(cardAssetId, cardData = {}) {
+    if (!cardAssetId) {
+        return;
+    }
+
+    await runExecute(
+        `UPDATE card_assets
+         SET is_registered = 1,
+             card_number = ?,
+             card_expiry = ?,
+             card_cvc = ?,
+             billing_country = ?,
+             billing_address = ?,
+             billing_city = ?,
+             billing_state = ?,
+             billing_zip = ?,
+             billing_name = ?,
+             card_sms = ?,
+             redeemed_at = CURRENT_TIMESTAMP,
+             remark = ?,
+             is_active = 1,
+             status = '正常'
+         WHERE id = ?`,
+        [
+            String(cardData.CARD_NUMBER || cardData.card_number || ''),
+            String(cardData.CARD_EXPIRY || cardData.card_expiry || ''),
+            String(cardData.CARD_CVC || cardData.card_cvc || ''),
+            String(cardData.BILLING_COUNTRY || cardData.billing_country || ''),
+            String(cardData.BILLING_ADDRESS || cardData.billing_address || ''),
+            String(cardData.BILLING_CITY || cardData.billing_city || ''),
+            String(cardData.BILLING_STATE || cardData.billing_state || ''),
+            String(cardData.BILLING_ZIP || cardData.billing_zip || ''),
+            String(cardData.BILLING_NAME || cardData.billing_name || ''),
+            String(cardData.card_sms || ''),
+            String(cardData.remark || ''),
+            Number(cardAssetId)
+        ]
+    );
+}
+
+async function markCardAssetExchangeFailed(cardAssetId, remark, status = '兑换异常') {
+    if (!cardAssetId) {
+        return;
+    }
+
+    await runExecute(
+        `UPDATE card_assets
+         SET is_active = 0,
+             status = ?,
+             remark = ?
+         WHERE id = ?`,
+        [
+            String(status || '兑换异常').slice(0, 32),
+            String(remark || '兑换异常：未知错误').slice(0, 2000),
+            Number(cardAssetId)
+        ]
     );
 }
 
 // 在事务里挑一个未占用资产并立即标记 in_use；无可用资产时返回 null 而不是阻塞。
 // 用 FOR UPDATE SKIP LOCKED 避免两个并发任务同时抢同一行。
-async function reserveAssetRow(connection, table, columns, ownerKey) {
+async function reserveAssetRow(connection, table, columns, ownerKey, activeClauseOverride = '') {
     const staleThreshold = new Date(Date.now() - ASSET_LOCK_STALE_MS);
     const colList = ['id', ...columns].join(', ');
+    const activeClause = activeClauseOverride || (table === 'card_assets' ? buildCardPickWhereClause() : 'is_active = 1');
     const [rows] = await connection.query(
         `SELECT ${colList}
          FROM ${table}
-         WHERE is_active = 1
+         WHERE ${activeClause}
            AND (in_use = 0 OR locked_at IS NULL OR locked_at < ?)
          ORDER BY usage_count ASC, COALESCE(locked_at, '1970-01-01') ASC, id ASC
          LIMIT 1
@@ -840,11 +1109,46 @@ async function reserveAssetRow(connection, table, columns, ownerKey) {
     return row;
 }
 
+async function reserveUnregisteredCardAsset(ownerKey = '') {
+    return withTransaction(async (connection) => {
+        const row = await reserveAssetRow(
+            connection,
+            'card_assets',
+            ['card_key', 'usage_count'],
+            ownerKey,
+            "is_active = 1 AND is_registered = 0 AND is_activated = 0 AND card_key <> ''"
+        );
+
+        return row
+            ? {
+                cardAssetId: row.id,
+                card: {
+                    key: row.card_key,
+                    usage_count: Number(row.usage_count || 0)
+                }
+            }
+            : null;
+    });
+}
+
 async function reserveRuntimeAssets(ownerKey = '') {
     return withTransaction(async (connection) => {
         const [phoneRow, cardRow, proxyRows] = await Promise.all([
             reserveAssetRow(connection, 'phone_assets', ['phone', 'sms_api_key', 'usage_count'], ownerKey),
-            reserveAssetRow(connection, 'card_assets', ['card_number', 'card_expiry', 'card_cvc', 'usage_count'], ownerKey),
+            reserveAssetRow(connection, 'card_assets', [
+                'card_key',
+                'card_number',
+                'card_expiry',
+                'card_cvc',
+                'billing_country',
+                'billing_address',
+                'billing_city',
+                'billing_state',
+                'billing_zip',
+                'billing_name',
+                'card_sms',
+                'usage_count'
+            ], ownerKey),
             connection.query(`SELECT config_value FROM app_config WHERE config_key = ? LIMIT 1`, ['proxy']).then(r => r[0])
         ]);
 
@@ -865,9 +1169,17 @@ async function reserveRuntimeAssets(ownerKey = '') {
                 : { phone: '未配置', key: '', usage_count: 0 },
             card: cardRow
                 ? {
+                    key: cardRow.card_key,
                     number: cardRow.card_number,
                     expiry: cardRow.card_expiry,
                     cvc: cardRow.card_cvc,
+                    billing_country: cardRow.billing_country || '',
+                    billing_address: cardRow.billing_address || '',
+                    billing_city: cardRow.billing_city || '',
+                    billing_state: cardRow.billing_state || '',
+                    billing_zip: cardRow.billing_zip || '',
+                    billing_name: cardRow.billing_name || '',
+                    card_sms: cardRow.card_sms || '',
                     usage_count: Number(cardRow.usage_count || 0)
                 }
                 : { number: '', expiry: '', cvc: '', usage_count: 0 },
@@ -1189,9 +1501,20 @@ async function getRuntimeAssets() {
              LIMIT 1`
         ),
         runQuery(
-            `SELECT card_number, card_expiry, card_cvc, usage_count
+            `SELECT card_key,
+                    card_number,
+                    card_expiry,
+                    card_cvc,
+                    billing_country,
+                    billing_address,
+                    billing_city,
+                    billing_state,
+                    billing_zip,
+                    billing_name,
+                    card_sms,
+                    usage_count
              FROM card_assets
-             WHERE is_active = 1
+             WHERE ${buildCardPickWhereClause()}
              ORDER BY usage_count ASC, id ASC
              LIMIT 1`
         ),
@@ -1205,13 +1528,26 @@ async function getRuntimeAssets() {
             ? { phone: phoneRow.phone, key: phoneRow.sms_api_key, usage_count: Number(phoneRow.usage_count || 0) }
             : { phone: '未配置', key: '', usage_count: 0 },
         card: cardRow
-            ? { number: cardRow.card_number, expiry: cardRow.card_expiry, cvc: cardRow.card_cvc, usage_count: Number(cardRow.usage_count || 0) }
+            ? {
+                key: cardRow.card_key,
+                number: cardRow.card_number,
+                expiry: cardRow.card_expiry,
+                cvc: cardRow.card_cvc,
+                billing_country: cardRow.billing_country || '',
+                billing_address: cardRow.billing_address || '',
+                billing_city: cardRow.billing_city || '',
+                billing_state: cardRow.billing_state || '',
+                billing_zip: cardRow.billing_zip || '',
+                billing_name: cardRow.billing_name || '',
+                card_sms: cardRow.card_sms || '',
+                usage_count: Number(cardRow.usage_count || 0)
+            }
             : { number: '', expiry: '', cvc: '', usage_count: 0 },
         proxy
     };
 }
 
-async function incrementAssetSuccessCount({ phone, cardNumber }) {
+async function incrementAssetSuccessCount({ phone, cardAssetId, cardKey, cardNumber } = {}) {
     const tasks = [];
 
     if (phone) {
@@ -1225,13 +1561,14 @@ async function incrementAssetSuccessCount({ phone, cardNumber }) {
         );
     }
 
-    if (cardNumber) {
+    const cardTarget = buildCardAssetTargetWhere({ cardAssetId, cardKey, cardNumber });
+    if (cardTarget) {
         tasks.push(
             runExecute(
                 `UPDATE card_assets
-                 SET usage_count = usage_count + 1
-                 WHERE card_number = ? AND is_active = 1`,
-                [String(cardNumber)]
+                  SET usage_count = usage_count + 1
+                  WHERE ${cardTarget.clause} AND is_active = 1`,
+                cardTarget.params
             )
         );
     }
@@ -1699,6 +2036,10 @@ module.exports = {
     resetActivationAttemptFailure,
     deletePhoneAsset,
     deleteCardAsset,
+    deleteCardAssetById,
+    markCardAssetActivated,
+    markCardAssetRegistered,
+    markCardAssetExchangeFailed,
     bulkImportPoolEmails,
     listPoolEmails,
     getPoolEmailCredentials,
@@ -1708,6 +2049,7 @@ module.exports = {
     markPoolEmailRegistered,
     getRuntimeAssets,
     reserveRuntimeAssets,
+    reserveUnregisteredCardAsset,
     releaseRuntimeAssets,
     releaseStaleAssetLocks,
     resetAllAssetLocks,
@@ -1743,5 +2085,13 @@ module.exports = {
         port: DB_PORT,
         database: DB_NAME,
         user: DB_USER
+    },
+    __test: {
+        normalizePhonePool,
+        normalizePhoneStatus,
+        normalizeCardPool,
+        normalizeCardStatus,
+        buildCardPickWhereClause,
+        buildCardAssetTargetWhere
     }
 };

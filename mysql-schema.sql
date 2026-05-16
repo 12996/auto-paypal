@@ -25,9 +25,22 @@ CREATE TABLE IF NOT EXISTS phone_assets (
 
 CREATE TABLE IF NOT EXISTS card_assets (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    card_number VARCHAR(32) NOT NULL,
+    card_key VARCHAR(64) NOT NULL,
+    is_registered TINYINT(1) NOT NULL DEFAULT 0,
+    card_number VARCHAR(32) NOT NULL DEFAULT '',
     card_expiry VARCHAR(16) NOT NULL DEFAULT '',
     card_cvc VARCHAR(16) NOT NULL DEFAULT '',
+    billing_country VARCHAR(64) NOT NULL DEFAULT '',
+    billing_address VARCHAR(255) NOT NULL DEFAULT '',
+    billing_city VARCHAR(128) NOT NULL DEFAULT '',
+    billing_state VARCHAR(128) NOT NULL DEFAULT '',
+    billing_zip VARCHAR(64) NOT NULL DEFAULT '',
+    billing_name VARCHAR(128) NOT NULL DEFAULT '',
+    card_sms TEXT NULL,
+    is_activated TINYINT(1) NOT NULL DEFAULT 0,
+    activation_account VARCHAR(255) NOT NULL DEFAULT '',
+    redeemed_at TIMESTAMP NULL DEFAULT NULL,
+    remark TEXT NULL,
     usage_count INT NOT NULL DEFAULT 0,
     sort_order INT NOT NULL DEFAULT 0,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
@@ -37,8 +50,9 @@ CREATE TABLE IF NOT EXISTS card_assets (
     locked_by VARCHAR(64) NULL DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_card_assets_key (card_key),
     KEY idx_card_assets_sort (sort_order, id),
-    KEY idx_card_assets_pick (is_active, in_use, locked_at, usage_count)
+    KEY idx_card_assets_pick (is_active, is_registered, is_activated, in_use, locked_at, usage_count)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS cdk_codes (

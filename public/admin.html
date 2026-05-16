@@ -402,6 +402,26 @@
             border-radius: 10px;
         }
 
+        #cards .data-table {
+            min-width: 2720px;
+        }
+
+        .readonly-cell {
+            min-height: 22px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--text-main);
+        }
+
+        .readonly-cell.empty {
+            color: transparent;
+        }
+
+        .card-key-input {
+            min-width: 220px;
+        }
+
         .table-footer {
             margin-top: 16px;
             display: flex;
@@ -2068,13 +2088,13 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                 </div>
                 <div id="card_import_box" class="import-box">
                     <div class="import-box-header">
-                        <div class="import-box-title">批量导入银行卡池</div>
-                    </div>
-                    <div class="import-box-tip">
-                        每行一条，格式：`卡号-有效期-安全码`。例如：`5349336392059744-0431-738`，其中有效期填写 `MMYY`。
-                    </div>
-                    <textarea id="card_import_text" class="import-textarea"
-                        placeholder="5349336392059744-0431-738&#10;5349336383247282-0431-937"></textarea>
+                    <div class="import-box-title">批量导入银行卡密</div>
+                </div>
+                <div class="import-box-tip">
+                    每行一条卡密。例如：`4859-F868-EMFMYMYY-B03E`。未兑换前，后续 CARD / BILLING 字段保持空白。
+                </div>
+                <textarea id="card_import_text" class="import-textarea"
+                    placeholder="4859-F868-EMFMYMYY-B03E&#10;4859-F868-EMFMYMYY-B03F"></textarea>
                     <div class="import-actions">
                         <button class="btn btn-success" onclick="importAssets('card_pool')">
                             <i data-lucide="check-check"></i>
@@ -2109,11 +2129,23 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                         <thead>
                             <tr>
                                 <th class="select-header">选择</th>
-                                <th>银行卡号</th>
-                                <th width="200px">有效期 (MM/YY)</th>
-                                <th width="150px">CVC</th>
-                                <th width="110px" style="text-align:center">成功次数</th>
-                                <th width="110px" style="text-align:center">状态</th>
+                                <th width="230px">卡密</th>
+                                <th width="100px" style="text-align:center">是否注册</th>
+                                <th width="210px">CARD_NUMBER</th>
+                                <th width="130px">CARD_EXPIRY</th>
+                                <th width="110px">CARD_CVC</th>
+                                <th width="150px">BILLING_COUNTRY</th>
+                                <th width="240px">BILLING_ADDRESS</th>
+                                <th width="150px">BILLING_CITY</th>
+                                <th width="150px">BILLING_STATE</th>
+                                <th width="130px">BILLING_ZIP</th>
+                                <th width="170px">BILLING_NAME</th>
+                                <th width="180px">card_sms</th>
+                                <th width="100px" style="text-align:center">是否激活</th>
+                                <th width="130px">卡状态</th>
+                                <th width="220px">激活账号</th>
+                                <th width="180px">兑换时间</th>
+                                <th width="220px">备注</th>
                                 <th width="120px" style="text-align:center">操作</th>
                             </tr>
                         </thead>
@@ -2937,6 +2969,14 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
             return item && item.is_active !== 0 && item.status !== 'invalid';
         }
 
+        function normalizePhoneStatus(item) {
+            const rawStatus = String(item?.status || '').trim();
+            if (rawStatus === 'normal' || rawStatus === '正常') return '正常';
+            if (rawStatus === 'invalid' || rawStatus === '已报废') return '已报废';
+            if (rawStatus) return rawStatus;
+            return item?.is_active === 0 ? '已报废' : '正常';
+        }
+
         function getFilteredItems(type) {
             const filter = tableFilters[type] || 'all';
             const source = type === 'phone_pool' ? phonePool : type === 'card_pool' ? cardPool : type === 'cdk' ? cdkPool : productPool;
@@ -3056,7 +3096,7 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
 
         function getItemKey(type, item) {
             if (type === 'phone_pool') return item.phone || '';
-            if (type === 'card_pool') return item.number || '';
+            if (type === 'card_pool') return item.card_key || item.number || '';
             if (type === 'cdk') return typeof item === 'string' ? item : (item.code || '');
             if (type === 'product') return String(item.id || '');
             return '';
@@ -3417,7 +3457,7 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                     document.getElementById('max_concurrent_activations').value = data.config.max_concurrent_activations || 1;
                     document.getElementById('max_background_concurrent').value = data.config.max_background_concurrent || 1;
                     phonePool = data.config.phone_pool || [];
-                    cardPool = data.config.card_pool || [];
+                    cardPool = (data.config.card_pool || []).map(normalizeCardForUi);
                     pruneSelection('phone_pool', phonePool);
                     pruneSelection('card_pool', cardPool);
                     renderPhoneTable();
@@ -3636,8 +3676,14 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                     .filter(Boolean),
                 phone_pool: phonePool.filter((p) => p.phone),
                 card_pool: cardPool
-                    .filter((c) => c.number)
-                    .map((card) => ({ ...card, expiry: formatCardExpiryForSave(card.expiry) }))
+                    .map(normalizeCardForUi)
+                    .filter((c) => c.card_key)
+                    .map((card) => ({
+                        ...card,
+                        is_registered: Number(card.is_registered || 0) === 1 ? 1 : 0,
+                        is_activated: Number(card.is_activated || 0) === 1 ? 1 : 0,
+                        expiry: formatCardExpiryForSave(card.expiry)
+                    }))
             };
         }
 
@@ -3806,14 +3852,14 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
         async function batchDeleteCards() {
             const keys = Array.from(selectedItems.card_pool);
             if (keys.length === 0) {
-                showMessage('请选择要删除的银行卡', 'warning');
+                showMessage('请选择要删除的卡密', 'warning');
                 return;
             }
-            const ok = await showAdminConfirm(`确定删除选中的 ${keys.length} 张银行卡 ?`, '删除银行卡');
+            const ok = await showAdminConfirm(`确定删除选中的 ${keys.length} 个卡密 ?`, '删除卡密');
             if (!ok) {
                 return;
             }
-            cardPool = cardPool.filter((item) => !selectedItems.card_pool.has(item.number || ''));
+            cardPool = cardPool.filter((item) => !selectedItems.card_pool.has(item.card_key || ''));
             selectedItems.card_pool.clear();
             renderCardTable();
         }
@@ -3931,13 +3977,23 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                     <td><input type="text" class="asset-input" value="${item.phone}" onchange="phonePool[${actualIndex}].phone=this.value" placeholder="13800000000"></td>
                     <td><input type="text" class="asset-input" value="${item.key}" onchange="phonePool[${actualIndex}].key=this.value" placeholder="API Key"></td>
                     <td style="text-align:center">${Number(item.usage_count || 0)}</td>
-                    <td style="text-align:center">${renderAssetStatus(isActive)}</td>
+                    <td><select class="asset-input" onchange="handlePhoneStatusChange(${actualIndex}, this.value)">
+                        <option value="正常" ${normalizePhoneStatus(item) === '正常' ? 'selected' : ''}>正常</option>
+                        <option value="已报废" ${normalizePhoneStatus(item) === '已报废' ? 'selected' : ''}>已报废</option>
+                    </select></td>
                     <td style="text-align:center"><button class="btn-delete" onclick="phonePool.splice(${actualIndex},1);renderPhoneTable()" title="删除"><i data-lucide="trash-2"></i></button></td>
                 </tr>
             `;
             }).join('');
             renderPagination('phone_pool_pagination', 'phone_pool', pageData.total);
             lucide.createIcons();
+        }
+
+        function handlePhoneStatusChange(index, status) {
+            if (!phonePool[index]) return;
+            phonePool[index].status = normalizePhoneStatus({ status });
+            phonePool[index].is_active = phonePool[index].status === '正常' ? 1 : 0;
+            renderPhoneTable();
         }
 
         function formatCardExpiryForDisplay(expiry) {
@@ -3952,20 +4008,130 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
             return String(expiry || '');
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function renderReadonlyCell(value, titleValue = value) {
+            const text = String(value ?? '');
+            const title = String(titleValue ?? text);
+            return `<div class="readonly-cell ${text ? '' : 'empty'}" title="${escapeHtml(title)}">${escapeHtml(text)}</div>`;
+        }
+
+        function normalizeCardForUi(card) {
+            const item = card || {};
+            const status = normalizeCardStatus(item);
+            return {
+                ...item,
+                card_key: String(item.card_key || item.key || item.cardKey || item.number || '').trim(),
+                is_registered: Number(item.is_registered ?? item.registered ?? 0) === 1 ? 1 : 0,
+                number: String(item.number || item.card_number || ''),
+                expiry: String(item.expiry || item.card_expiry || ''),
+                cvc: String(item.cvc || item.card_cvc || ''),
+                billing_country: String(item.billing_country || ''),
+                billing_address: String(item.billing_address || ''),
+                billing_city: String(item.billing_city || ''),
+                billing_state: String(item.billing_state || ''),
+                billing_zip: String(item.billing_zip || ''),
+                billing_name: String(item.billing_name || ''),
+                card_sms: String(item.card_sms || ''),
+                is_activated: Number(item.is_activated ?? item.activated ?? 0) === 1 ? 1 : 0,
+                activation_account: String(item.activation_account || ''),
+                redeemed_at: String(item.redeemed_at || ''),
+                remark: String(item.remark || ''),
+                is_active: status === '正常' ? 1 : 0,
+                status
+            };
+        }
+
+        function normalizeCardStatus(item) {
+            const rawStatus = String(item?.status || '').trim();
+            if (rawStatus === 'normal' || rawStatus === '正常') return '正常';
+            if (rawStatus === 'invalid' || rawStatus === '已报废') return '已报废';
+            if (rawStatus === '兑换异常') return '兑换异常';
+            if (rawStatus) return rawStatus;
+            return item?.is_active === 0 ? '已报废' : '正常';
+        }
+
+        function toTinyBool(value) {
+            return value ? 1 : 0;
+        }
+
+        function formatDateTimeForMysql(date) {
+            const pad = (n) => String(n).padStart(2, '0');
+            return [
+                date.getFullYear(),
+                pad(date.getMonth() + 1),
+                pad(date.getDate())
+            ].join('-') + ' ' + [
+                pad(date.getHours()),
+                pad(date.getMinutes()),
+                pad(date.getSeconds())
+            ].join(':');
+        }
+
+        function handleCardRegisteredChange(index, checked) {
+            if (!cardPool[index]) return;
+            cardPool[index].is_registered = toTinyBool(checked);
+            if (checked && !cardPool[index].redeemed_at) {
+                cardPool[index].redeemed_at = formatDateTimeForMysql(new Date());
+            }
+            if (!checked) {
+                cardPool[index].redeemed_at = '';
+            }
+            renderCardTable();
+        }
+
+        function handleCardActivatedChange(index, checked) {
+            if (!cardPool[index]) return;
+            cardPool[index].is_activated = toTinyBool(checked);
+            if (!checked) {
+                cardPool[index].activation_account = '';
+            }
+            renderCardTable();
+        }
+
+        function handleCardStatusChange(index, status) {
+            if (!cardPool[index]) return;
+            cardPool[index].status = normalizeCardStatus({ status });
+            cardPool[index].is_active = cardPool[index].status === '正常' ? 1 : 0;
+            renderCardTable();
+        }
+
         function renderCardTable() {
             const pageData = getPageItems(getFilteredItems('card_pool'), 'card_pool');
             document.getElementById('card_pool_body').innerHTML = pageData.items.map((item, index) => {
                 const actualIndex = cardPool.indexOf(item);
-                const isActive = isAssetActive(item);
-                const key = item.number || '';
+                const key = item.card_key || item.number || '';
                 return `
                 <tr>
                     <td class="select-cell"><input type="checkbox" ${selectedItems.card_pool.has(key) ? 'checked' : ''} onchange="toggleSelection('card_pool', '${key}', this.checked)"></td>
-                    <td><input type="text" class="asset-input" value="${item.number}" onchange="cardPool[${actualIndex}].number=this.value" placeholder="4111 1111 1111 1111"></td>
-                    <td><input type="text" class="asset-input" value="${formatCardExpiryForDisplay(item.expiry)}" maxlength="4" inputmode="numeric" onchange="cardPool[${actualIndex}].expiry=this.value" placeholder="0431"></td>
-                    <td><input type="text" class="asset-input" value="${item.cvc}" onchange="cardPool[${actualIndex}].cvc=this.value" placeholder="123"></td>
-                    <td style="text-align:center">${Number(item.usage_count || 0)}</td>
-                    <td style="text-align:center">${renderAssetStatus(isActive)}</td>
+                    <td><input type="text" class="asset-input card-key-input" value="${escapeHtml(item.card_key || '')}" onchange="cardPool[${actualIndex}].card_key=this.value.trim()" placeholder="4859-F868-EMFMYMYY-B03E"></td>
+                    <td style="text-align:center"><input type="checkbox" ${Number(item.is_registered || 0) === 1 ? 'checked' : ''} onchange="handleCardRegisteredChange(${actualIndex}, this.checked)"></td>
+                    <td>${renderReadonlyCell(item.number)}</td>
+                    <td>${renderReadonlyCell(formatCardExpiryForDisplay(item.expiry), item.expiry)}</td>
+                    <td>${renderReadonlyCell(item.cvc)}</td>
+                    <td>${renderReadonlyCell(item.billing_country)}</td>
+                    <td>${renderReadonlyCell(item.billing_address)}</td>
+                    <td>${renderReadonlyCell(item.billing_city)}</td>
+                    <td>${renderReadonlyCell(item.billing_state)}</td>
+                    <td>${renderReadonlyCell(item.billing_zip)}</td>
+                    <td>${renderReadonlyCell(item.billing_name)}</td>
+                    <td>${renderReadonlyCell(item.card_sms)}</td>
+                    <td style="text-align:center"><input type="checkbox" ${Number(item.is_activated || 0) === 1 ? 'checked' : ''} onchange="handleCardActivatedChange(${actualIndex}, this.checked)"></td>
+                    <td><select class="asset-input" onchange="handleCardStatusChange(${actualIndex}, this.value)">
+                        <option value="正常" ${item.status === '正常' ? 'selected' : ''}>正常</option>
+                        <option value="已报废" ${item.status === '已报废' ? 'selected' : ''}>已报废</option>
+                        <option value="兑换异常" ${item.status === '兑换异常' ? 'selected' : ''}>兑换异常</option>
+                    </select></td>
+                    <td>${renderReadonlyCell(item.activation_account)}</td>
+                    <td>${renderReadonlyCell(item.redeemed_at)}</td>
+                    <td>${renderReadonlyCell(item.remark)}</td>
                     <td style="text-align:center"><button class="btn-delete" onclick="cardPool.splice(${actualIndex},1);renderCardTable()" title="删除"><i data-lucide="trash-2"></i></button></td>
                 </tr>
             `;
@@ -4015,16 +4181,35 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
             return true;
         }
 
-        function upsertCardAsset(number, expiry, cvc) {
-            const existing = cardPool.find((item) => String(item.number || '') === number);
+        function upsertCardAsset(cardKey) {
+            const existing = cardPool.find((item) => String(item.card_key || '') === cardKey);
             if (existing) {
-                existing.expiry = expiry;
-                existing.cvc = cvc;
                 existing.is_active = 1;
                 existing.status = 'normal';
                 return false;
             }
-            cardPool.push({ number, expiry, cvc, usage_count: 0, is_active: 1, status: 'normal' });
+            cardPool.push({
+                card_key: cardKey,
+                is_registered: 0,
+                number: '',
+                expiry: '',
+                cvc: '',
+                billing_country: '',
+                billing_address: '',
+                billing_city: '',
+                billing_state: '',
+                billing_zip: '',
+                billing_name: '',
+                card_sms: '',
+                is_activated: 0,
+                activation_account: '',
+                redeemed_at: '',
+                remark: '',
+                usage_count: 0,
+                is_active: 1,
+                status: 'normal'
+            });
+            cardPool[cardPool.length - 1] = normalizeCardForUi(cardPool[cardPool.length - 1]);
             return true;
         }
 
@@ -4058,20 +4243,14 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                     continue;
                 }
 
-                const match = line.match(/^([0-9]{12,19})\s*-\s*([0-9/]{4,5})\s*-\s*([0-9]{3,4})$/);
+                const match = line.match(/^(\S+)$/);
                 if (!match) {
-                    showMessage(`第 ${index + 1} 行格式错误，请使用 卡号-有效期-安全码`, 'error');
+                    showMessage(`第 ${index + 1} 行格式错误，请使用卡密格式，例如 4859-F868-EMFMYMYY-B03E`, 'error');
                     return;
                 }
 
-                const [, number, rawExpiry, cvc] = match;
-                const expiry = formatCardExpiryForDisplay(rawExpiry);
-                if (expiry.length !== 4) {
-                    showMessage(`第 ${index + 1} 行有效期错误，请使用 4 位 MMYY`, 'error');
-                    return;
-                }
-
-                const isNew = upsertCardAsset(number.trim(), expiry, cvc.trim());
+                const [, cardKey] = match;
+                const isNew = upsertCardAsset(cardKey.trim());
                 if (isNew) createdCount += 1;
                 else updatedCount += 1;
             }
@@ -4137,7 +4316,27 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                 return;
             }
 
-            cardPool.push({ number: '', expiry: '', cvc: '', usage_count: 0, is_active: 1, status: 'normal' });
+            cardPool.push(normalizeCardForUi({
+                card_key: '',
+                is_registered: 0,
+                number: '',
+                expiry: '',
+                cvc: '',
+                billing_country: '',
+                billing_address: '',
+                billing_city: '',
+                billing_state: '',
+                billing_zip: '',
+                billing_name: '',
+                card_sms: '',
+                is_activated: 0,
+                activation_account: '',
+                redeemed_at: '',
+                remark: '',
+                usage_count: 0,
+                is_active: 1,
+                status: 'normal'
+            }));
             paginationState.card_pool.page = Math.max(1, Math.ceil(cardPool.length / paginationState.card_pool.pageSize));
             renderCardTable();
         }

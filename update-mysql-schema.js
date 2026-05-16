@@ -128,6 +128,41 @@ async function ensureActivationAttemptLimitsTable(connection) {
     await ensureIndex(connection, 'activation_attempt_limits', 'idx_activation_attempt_cooldown', 'KEY `idx_activation_attempt_cooldown` (`cooldown_until`)');
 }
 
+async function ensureCardAssetsSchema(connection) {
+    if (!(await hasTable(connection, 'card_assets'))) {
+        console.log('= 表不存在 card_assets，启动服务时会按 mysql-schema.sql 创建');
+        return;
+    }
+
+    console.log('= 表已存在 card_assets');
+    await ensureColumn(connection, 'card_assets', 'card_key', "VARCHAR(64) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'is_registered', 'TINYINT(1) NOT NULL DEFAULT 0');
+    await ensureColumn(connection, 'card_assets', 'card_number', "VARCHAR(32) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'card_expiry', "VARCHAR(16) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'card_cvc', "VARCHAR(16) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'billing_country', "VARCHAR(64) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'billing_address', "VARCHAR(255) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'billing_city', "VARCHAR(128) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'billing_state', "VARCHAR(128) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'billing_zip', "VARCHAR(64) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'billing_name', "VARCHAR(128) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'card_sms', 'TEXT NULL');
+    await ensureColumn(connection, 'card_assets', 'is_activated', 'TINYINT(1) NOT NULL DEFAULT 0');
+    await ensureColumn(connection, 'card_assets', 'activation_account', "VARCHAR(255) NOT NULL DEFAULT ''");
+    await ensureColumn(connection, 'card_assets', 'redeemed_at', 'TIMESTAMP NULL DEFAULT NULL');
+    await ensureColumn(connection, 'card_assets', 'remark', 'TEXT NULL');
+
+    await connection.query(`
+        UPDATE card_assets
+        SET card_key = card_number,
+            is_registered = 1,
+            redeemed_at = COALESCE(redeemed_at, created_at)
+        WHERE card_key = ''
+          AND card_number <> ''
+    `);
+    console.log('+ 已兼容迁移旧银行卡数据到卡密字段');
+}
+
 async function run() {
     const connection = await mysql.createConnection({
         host: DB_HOST,
@@ -148,6 +183,7 @@ async function run() {
 
         await ensureProductAssetsTable(connection);
         await ensureActivationAttemptLimitsTable(connection);
+        await ensureCardAssetsSchema(connection);
 
         console.log('数据库结构更新完成');
     } finally {

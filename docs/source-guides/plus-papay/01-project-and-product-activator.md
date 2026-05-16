@@ -78,7 +78,7 @@ const CONFIG = {
     message: string,           // 人类可读的错误描述
     reachedPaypal: boolean,    // 是否已进入 PayPal 流程
     shouldRetry: boolean,      // 是否应该重试
-    deletePhone: boolean,      // 是否应该禁用当前手机号
+    deletePhone: boolean,      // 当前流程保留兼容字段；手机号作废由管理员在后台手动指定
     deleteCard: boolean        // 是否应该禁用当前银行卡
 }
 ```
@@ -93,8 +93,8 @@ const CONFIG = {
 | `代理或网络持续超时` | retry | 换代理 + 换账号 |
 | `OpenAI 鉴权服务异常` | retry | 换代理 IP |
 | `邮箱已被注册` | retry | 换邮箱 |
-| `手机号被拒绝` | retry | **永久禁用手机号** |
-| `短信验证码超时` | retry | **永久禁用手机号** |
+| `手机号被拒绝` | retry | 不自动作废手机号，由管理员后台判断 |
+| `短信验证码超时` | retry | 不自动作废手机号，由管理员后台判断 |
 | `银行卡被拒绝` | retry | 禁用银行卡（仅当已到 PayPal） |
 | `stripe_redirect_failed` | retry | 换号重试 |
 | `PayPal 未渲染创建账户表单` | retry | 同号重试 |
@@ -204,7 +204,7 @@ emailSource = 'random' | 'pool' | 'inbox'
 |------|------|------|
 | L893-912 | 资产排队 | 最多等 5 分钟抢手机号/银行卡 |
 | L982-988 | 支付成功占位 | `PAYMENT_SUCCESS` 后立即写 DB（status='待协议'） |
-| L1096-1109 | 禁用坏资产 | `deletePhone=true` 时调用 `store.deletePhoneAsset()` |
+| L1096-1109 | 资产状态 | 手机号不由自动流程作废；坏卡仍按规则禁用 |
 | L1140-1148 | 支付成功但协议失败 | 终止任务，不再换号（避免重复扣费） |
 
 ---

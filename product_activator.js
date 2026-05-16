@@ -6,6 +6,7 @@ const store = require('./mysql-store');
 const runtimeLog = require('./runtime-log');
 const { getImapAuthHeaders, forceRefreshImapToken } = require('./imap-auth');
 const CaliforniaFingerprint = require('./lib/california-fingerprint');
+const cardAssetRegistrar = require('./card_asset_registrar');
 
 const CONFIG = {
     MAX_ACCOUNT_RETRIES: 15,
@@ -339,10 +340,10 @@ function analyzeProcessOutput(output, timedOut) {
     if (normalized.includes('手机号被拒绝或系统拦截')) {
         return {
             status: 'retry',
-            message: '手机号不可用，已禁用该号，准备重试',
+            message: '手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: true,   // 手机号被拒 → 永久禁用，不再依赖 reachedPaypal
+            deletePhone: false,
             deleteCard: false
         };
     }
@@ -352,10 +353,10 @@ function analyzeProcessOutput(output, timedOut) {
         || normalized.includes('手机号短信验证异常')) {
         return {
             status: 'retry',
-            message: '短信异常：手机号不可用，已禁用该号，准备重试',
+            message: '短信异常：手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: true,
+            deletePhone: false,
             deleteCard: false
         };
     }
@@ -486,6 +487,12 @@ async function runActivationProcess(accessToken, cdk, runtimeAssets, runtimeJobK
             CARD_NUMBER: runtimeAssets?.card?.number || '',
             CARD_EXPIRY: runtimeAssets?.card?.expiry || '',
             CARD_CVC: runtimeAssets?.card?.cvc || '',
+            BILLING_COUNTRY: runtimeAssets?.card?.billing_country || '',
+            BILLING_ADDRESS: runtimeAssets?.card?.billing_address || '',
+            BILLING_CITY: runtimeAssets?.card?.billing_city || '',
+            BILLING_STATE: runtimeAssets?.card?.billing_state || '',
+            BILLING_ZIP: runtimeAssets?.card?.billing_zip || '',
+            BILLING_NAME: runtimeAssets?.card?.billing_name || '',
             IS_PRODUCT_FLOW: 'true',
             FINGERPRINT_CONFIG: JSON.stringify(fingerprintConfig)
         },
@@ -880,6 +887,48 @@ async function runProtocolProcess(email, onProgress, runtimeJobKey = '', inboxBu
     throw new Error(lastError || `协议提取失败，已超过 ${CONFIG.MAX_PROTOCOL_RETRIES} 次重试`);
 }
 
+async function settleActivationAssets(storeApi, runtimeAssets, outcome = {}) {
+    if (!runtimeAssets) {
+        return { cardMarked: false, cardDeleted: false };
+    }
+
+    let cardMarked = false;
+    let cardDeleted = false;
+
+    if (outcome.success && runtimeAssets.cardAssetId) {
+        try {
+            await storeApi.markCardAssetActivated(runtimeAssets.cardAssetId, outcome.email || '');
+            cardMarked = true;
+        } catch (err) {
+            if (typeof outcome.onMarkError === 'function') {
+                outcome.onMarkError(err);
+            }
+        }
+    }
+
+    if (!outcome.success && outcome.deleteCard && typeof storeApi.deleteCardAsset === 'function') {
+        try {
+            await storeApi.deleteCardAsset({
+                cardAssetId: runtimeAssets.cardAssetId,
+                cardKey: runtimeAssets.card?.key,
+                cardNumber: runtimeAssets.card?.number
+            });
+            cardDeleted = true;
+        } catch (err) {
+            if (typeof outcome.onDeleteError === 'function') {
+                outcome.onDeleteError(err);
+            }
+        }
+    }
+
+    await storeApi.releaseRuntimeAssets({
+        phoneAssetId: runtimeAssets.phoneAssetId,
+        cardAssetId: runtimeAssets.cardAssetId
+    });
+
+    return { cardMarked, cardDeleted };
+}
+
 async function startProductCreation(cdk, progressCallback, options = {}) {
     let accountAttempt = 0;
     let topupFailureCount = 0;
@@ -921,7 +970,9 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
                 let runtimeAssets = null;
                 const reserveDeadline = Date.now() + 5 * 60 * 1000;
                 while (Date.now() < reserveDeadline) {
-                    runtimeAssets = await store.reserveRuntimeAssets(`${ownerKey}:${email}:${activationAttempt}`);
+                    runtimeAssets = await cardAssetRegistrar.ensureRuntimeAssets({
+                        ownerKey: `${ownerKey}:${email}:${activationAttempt}`
+                    });
                     if (runtimeAssets.phone.phone && runtimeAssets.phone.phone !== '未配置' && runtimeAssets.card.number) {
                         break;
                     }
@@ -960,46 +1011,60 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
 
                 let activationResult;
                 let analysis;
+                let activationSucceeded = false;
+                let activationShouldDeleteCard = false;
+                let settledAssets = { cardDeleted: false };
                 try {
-                let activationProgress = 34;
-                let activationMessage = `正在激活账号，手机号 ${runtimeAssets.phone.phone}，银行卡尾号 ${cardLast4}...`;
-                activationResult = await runActivationChild(
-                    path.join(__dirname, 'index.js'),
-                    [],
-                    {
-                        ...process.env,
-                        CHATGPT_TOKEN: accessToken,
-                        CDK_CODE: cdk,
-                        SMS_API_KEY: runtimeAssets?.phone?.key || '',
-                        BILLING_PHONE: runtimeAssets?.phone?.phone || '',
-                        PROXY: runtimeAssets?.proxy || '',
-                        CARD_NUMBER: runtimeAssets?.card?.number || '',
-                        CARD_EXPIRY: runtimeAssets?.card?.expiry || '',
-                        CARD_CVC: runtimeAssets?.card?.cvc || '',
-                        IS_PRODUCT_FLOW: 'true'
-                    },
-                    (line) => {
-                        const parsed = getStageProgress(ACTIVATION_PROGRESS_MARKERS, line, activationProgress, activationMessage);
-                        if (parsed.progress > activationProgress || parsed.message !== activationMessage) {
-                            activationProgress = parsed.progress;
-                            activationMessage = parsed.message;
-                            progressCallback({
-                                progress: activationProgress,
-                                message: activationMessage,
-                                phone: runtimeAssets.phone.phone,
-                                cardLast4,
-                                cardExpiry
-                            });
-                        }
-                    },
-                    { runtimeJobKey }
-                );
-                analysis = activationResult.analysis;
+                    let activationProgress = 34;
+                    let activationMessage = `正在激活账号，手机号 ${runtimeAssets.phone.phone}，银行卡尾号 ${cardLast4}...`;
+                    activationResult = await runActivationChild(
+                        path.join(__dirname, 'index.js'),
+                        [],
+                        {
+                            ...process.env,
+                            CHATGPT_TOKEN: accessToken,
+                            CDK_CODE: cdk,
+                            SMS_API_KEY: runtimeAssets?.phone?.key || '',
+                            BILLING_PHONE: runtimeAssets?.phone?.phone || '',
+                            PROXY: runtimeAssets?.proxy || '',
+                            CARD_NUMBER: runtimeAssets?.card?.number || '',
+                            CARD_EXPIRY: runtimeAssets?.card?.expiry || '',
+                            CARD_CVC: runtimeAssets?.card?.cvc || '',
+                            BILLING_COUNTRY: runtimeAssets?.card?.billing_country || '',
+                            BILLING_ADDRESS: runtimeAssets?.card?.billing_address || '',
+                            BILLING_CITY: runtimeAssets?.card?.billing_city || '',
+                            BILLING_STATE: runtimeAssets?.card?.billing_state || '',
+                            BILLING_ZIP: runtimeAssets?.card?.billing_zip || '',
+                            BILLING_NAME: runtimeAssets?.card?.billing_name || '',
+                            IS_PRODUCT_FLOW: 'true'
+                        },
+                        (line) => {
+                            const parsed = getStageProgress(ACTIVATION_PROGRESS_MARKERS, line, activationProgress, activationMessage);
+                            if (parsed.progress > activationProgress || parsed.message !== activationMessage) {
+                                activationProgress = parsed.progress;
+                                activationMessage = parsed.message;
+                                progressCallback({
+                                    progress: activationProgress,
+                                    message: activationMessage,
+                                    phone: runtimeAssets.phone.phone,
+                                    cardLast4,
+                                    cardExpiry
+                                });
+                            }
+                        },
+                        { runtimeJobKey }
+                    );
+                    analysis = activationResult.analysis;
+                    activationSucceeded = Boolean(activationResult.success);
+                    activationShouldDeleteCard = Boolean(analysis?.deleteCard);
                 } finally {
-                    // 无论成功失败都先释放资产，避免占用残留
-                    await store.releaseRuntimeAssets({
-                        phoneAssetId: runtimeAssets.phoneAssetId,
-                        cardAssetId: runtimeAssets.cardAssetId
+                    // 先落库卡状态，再释放锁，避免并发任务抢到同一张卡。
+                    settledAssets = await settleActivationAssets(store, runtimeAssets, {
+                        success: activationSucceeded,
+                        deleteCard: activationShouldDeleteCard,
+                        email,
+                        onMarkError: (err) => console.warn(`[Product] 更新银行卡激活状态失败: ${err.message}`),
+                        onDeleteError: (err) => console.warn(`[Product] 禁用银行卡失败: ${err.message}`)
                     }).catch((err) => console.warn(`[Product] release runtime assets failed: ${err.message}`));
                 }
 
@@ -1064,6 +1129,8 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
 
                     await store.incrementAssetSuccessCount({
                         phone: runtimeAssets.phone.phone,
+                        cardAssetId: runtimeAssets.cardAssetId,
+                        cardKey: runtimeAssets.card.key,
                         cardNumber: runtimeAssets.card.number
                     }).catch((err) => console.warn(`[Product] 更新资产成功次数失败: ${err.message}`));
 
@@ -1120,24 +1187,16 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
                 }
 
                 if (analysis.shouldRetry || analysis.status === 'retry') {
-                    if (analysis.deletePhone) {
-                        const phoneToBan = runtimeAssets.phone.phone;
-                        await store.deletePhoneAsset(phoneToBan);
-                        const banMsg = `🚫 [资产] 手机号 ${phoneToBan} 被拒/拦截，已永久禁用 (status='已报废', is_active=0)`;
-                        console.warn(banMsg);
-                        // 把禁用事件推到前端 runtime log 让用户能看见
-                        progressCallback({
-                            progress: Math.min(20 + accountAttempt * 5, 60),
-                            message: `手机号 ${phoneToBan} 已禁用，准备换号重试...`,
-                            phone: phoneToBan,
-                            cardLast4,
-                            cardExpiry
-                        });
-                    }
                     if (analysis.deleteCard) {
                         const cardToBan = runtimeAssets.card.number;
-                        await store.deleteCardAsset(cardToBan);
-                        const banMsg = `🚫 [资产] 银行卡尾号 ${cardToBan.slice(-4)} 被拒，已永久禁用 (status='已报废', is_active=0)`;
+                        if (!settledAssets?.cardDeleted) {
+                            await store.deleteCardAsset({
+                                cardAssetId: runtimeAssets.cardAssetId,
+                                cardKey: runtimeAssets.card.key,
+                                cardNumber: cardToBan
+                            });
+                        }
+                        const banMsg = `🚫 [资产] 卡密 ${runtimeAssets.card.key || '(未知)'} / 银行卡尾号 ${cardToBan.slice(-4)} 被拒，已永久禁用 (status='已报废', is_active=0)`;
                         console.warn(banMsg);
                     }
                     const retryMessage = analysis.message || '开通任务异常，正在重试';
@@ -1204,4 +1263,10 @@ if (require.main === module) {
     startProductCreation(cdk, console.log).catch(console.error);
 }
 
-module.exports = { startProductCreation };
+module.exports = {
+    startProductCreation,
+    __test: {
+        analyzeProcessOutput,
+        settleActivationAssets
+    }
+};

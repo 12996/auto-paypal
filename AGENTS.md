@@ -1,28 +1,52 @@
 # AGENTS.md
 
-本文件是项目级 AI 协作入口文档。
+本文件是 AI 接手项目时的文档导航协议。
 
-任何 AI Agent、自动化编码助手或接手本项目的开发者，在开始理解、修改、规划或总结项目之前，都应先阅读本文件。
+本文件不作为项目介绍、需求文档、技术文档或工作记录使用。它只说明：
 
-本文件不记录具体业务需求、技术实现细节或临时工作过程。它只定义本项目的文档管理体系、阅读顺序、信息归档位置和文档更新规则。
+- 文档放在哪里。
+- 每类文档负责什么。
+- 每个目录的入口文件是什么。
+- 信息应该写入哪里。
+- 文档冲突时如何判断。
+- 任务结束时如何更新交接信息。
 
----
-
-## 1. 文档系统目标
-
-本项目采用面向大型 vibe coding 项目的分层文档管理体系，目标是：
-
-1. 让 AI 每次接手项目时能快速恢复上下文。
-2. 让人类可以追溯需求、架构、错误、决策和工作过程。
-3. 避免把规则、模板、记忆、需求、技术方案、调试记录混在一起。
-4. 保持当前状态清晰，减少过期文档对 AI 的误导。
-5. 支持项目长期演进，而不是只服务单次任务。
+AI 应根据当前任务目标主动判断需要阅读哪些文档，而不是机械读取所有文档。
 
 ---
 
-## 2. 文档目录总览
+## 1. 文档总入口
 
 项目文档统一放在 `docs/` 目录下。
+
+文档总入口：
+
+```text
+docs/README.md
+```
+
+AI 接手任务时，应先理解任务目标，再按需读取相关入口文档。
+
+如果任务涉及需求、架构、API、测试、问题修复或交接状态，必须读取对应目录的入口文件或相关文档。
+
+---
+
+## 2. 目录职责与入口文件
+
+| 目录 | 职责 | 入口文件 |
+|---|---|---|
+| `docs/` | 文档总入口，说明文档体系和阅读路径 | `docs/README.md` |
+| `docs/prd/` | 需求真相源，记录要做什么、为什么、怎样算完成 | `docs/prd/PRD_REGISTRY.md` |
+| `docs/project/` | 技术真相源，记录架构、API、数据模型、部署方式 | `docs/project/architecture.md` |
+| `docs/rules/` | 硬约束，AI 和开发者必须遵守 | `docs/rules/README.md` |
+| `docs/templates/` | 文档模板，保证格式一致 | `docs/templates/README.md` |
+| `docs/memories/` | 长期稳定经验、项目风格、历史坑位 | `docs/memories/README.md` |
+| `docs/issues/` | 缺陷、风险、错误、排查过程和修复结果 | `docs/issues/README.md` |
+| `docs/work/` | 当前工作记录、阶段进展、任务交接 | `docs/work/handoff.md` |
+
+---
+
+## 3. 推荐目录结构
 
 ```text
 docs/
@@ -69,145 +93,15 @@ docs/
     handoff.md
 ```
 
----
+目录可以随项目演进扩展，但新增目录时应明确：
 
-## 3. 各目录职责与入口文件
-
-| 目录 | 职责 | 入口文件 |
-|---|---|---|
-| `docs/` | 文档总入口，说明文档体系和阅读路径 | `docs/README.md` |
-| `docs/prd/` | 需求真相源，记录要做什么、为什么、怎样算完成 | `docs/prd/PRD_REGISTRY.md` |
-| `docs/project/` | 技术真相源，记录架构、API、数据模型、部署方式 | `docs/project/architecture.md` |
-| `docs/rules/` | 硬约束，AI 和开发者必须遵守 | `docs/rules/README.md` |
-| `docs/templates/` | 文档模板，保证格式一致 | `docs/templates/README.md` |
-| `docs/memories/` | 长期稳定经验、项目风格、历史坑位 | `docs/memories/README.md` |
-| `docs/issues/` | 缺陷、风险、错误、排查过程和修复结果 | `docs/issues/README.md` |
-| `docs/work/` | 当前工作记录、阶段进展、任务交接 | `docs/work/handoff.md` |
+1. 它解决什么问题。
+2. 它的入口文件是什么。
+3. 它和现有目录的边界是什么。
 
 ---
 
-## 4. AI 接手项目时的默认阅读顺序
-
-AI 在开始工作前，应按以下顺序恢复上下文：
-
-1. `AGENTS.md`
-   - 了解项目文档系统规则。
-2. `docs/README.md`
-   - 了解文档总览和当前推荐阅读路径。
-3. `docs/work/handoff.md`
-   - 了解当前任务状态、最近进展、阻塞点和下一步。
-4. `docs/prd/PRD_REGISTRY.md`
-   - 了解需求列表、需求状态和相关 PRD。
-5. `docs/project/architecture.md`
-   - 了解项目整体技术结构。
-6. `docs/rules/README.md`
-   - 了解必须遵守的编码、测试、API、文档规则。
-7. `docs/memories/README.md`
-   - 按需读取长期经验、项目风格和历史坑位。
-
-如果任务范围很小，可以按需精简阅读，但不能跳过与任务直接相关的规则、PRD 和交接信息。
-
----
-
-## 5. 不同任务类型的阅读路径
-
-### 5.1 新功能开发
-
-优先阅读：
-
-1. `docs/work/handoff.md`
-2. `docs/prd/PRD_REGISTRY.md`
-3. 对应的 `docs/prd/PRD-xxx.md`
-4. `docs/project/architecture.md`
-5. `docs/project/api.md`
-6. `docs/project/data-model.md`
-7. `docs/rules/coding-rules.md`
-8. `docs/rules/testing-rules.md`
-
-新功能开发不得只依据口头描述直接实现。如果没有 PRD，应先补充或确认需求文档。
-
-### 5.2 Bug 修复或问题排查
-
-优先阅读：
-
-1. `docs/work/handoff.md`
-2. `docs/issues/README.md`
-3. 相关的 `docs/issues/issue-xxx.md`
-4. `docs/memories/known-issues.md`
-5. `docs/rules/testing-rules.md`
-6. 与问题相关的 `docs/project/*`
-
-修复完成后，应更新：
-
-- 对应 issue 文档。
-- `docs/work/work-log.md`。
-- 如形成长期经验，再更新 `docs/memories/known-issues.md`。
-
-### 5.3 架构调整
-
-优先阅读：
-
-1. `docs/project/architecture.md`
-2. `docs/project/api.md`
-3. `docs/project/data-model.md`
-4. `docs/project/deployment.md`
-5. 相关 PRD
-6. `docs/memories/decisions.md`
-7. `docs/rules/coding-rules.md`
-
-架构调整完成后，应同步更新对应技术文档。不能只改代码，不改架构文档。
-
-### 5.4 API 变更
-
-优先阅读：
-
-1. `docs/project/api.md`
-2. `docs/rules/api-rules.md`
-3. 相关 PRD
-4. 相关测试规则
-
-API 变更后必须更新：
-
-- `docs/project/api.md`
-- 相关 PRD 的验收标准
-- 相关测试计划或测试说明
-
-### 5.5 测试相关任务
-
-优先阅读：
-
-1. `docs/rules/testing-rules.md`
-2. `docs/templates/test-plan-template.md`
-3. 相关 PRD 的验收标准
-4. `docs/memories/known-issues.md`
-
-测试硬规则只能写入 `docs/rules/testing-rules.md`。
-测试经验和历史坑位写入 `docs/memories/known-issues.md`。
-测试计划格式写入 `docs/templates/test-plan-template.md`。
-
-### 5.6 文档整理或交接
-
-优先阅读：
-
-1. `docs/README.md`
-2. `docs/work/handoff.md`
-3. `docs/work/work-log.md`
-4. `docs/memories/README.md`
-5. `docs/issues/README.md`
-
-交接文档应说明：
-
-- 当前任务目标
-- 已完成事项
-- 未完成事项
-- 阻塞点
-- 关键文件
-- 下一步建议
-- 需要避免的坑
-
----
-
-## 6. 信息应该写到哪里
+## 4. 信息写入位置
 
 | 信息类型 | 应写入 |
 |---|---|
@@ -231,7 +125,7 @@ API 变更后必须更新：
 
 ---
 
-## 7. 禁止混放规则
+## 5. 禁止混放规则
 
 为避免文档长期失控，必须遵守以下规则：
 
@@ -255,13 +149,13 @@ API 变更后必须更新：
 
 ---
 
-## 8. 文档更新原则
+## 6. 文档更新原则
 
-### 8.1 修改代码后
+### 6.1 修改代码后
 
-如果代码变更影响了需求、架构、API、数据模型、部署或测试方式，必须同步更新对应文档。
+如果代码变更影响了需求、架构、API、数据模型、部署或测试方式，应同步更新对应文档。
 
-### 8.2 修复问题后
+### 6.2 修复问题后
 
 如果修复了明确 bug，应更新：
 
@@ -269,21 +163,21 @@ API 变更后必须更新：
 2. `docs/work/work-log.md`。
 3. 如该问题具有复用价值，更新 `docs/memories/known-issues.md`。
 
-### 8.3 完成阶段任务后
+### 6.3 完成阶段任务后
 
 应更新：
 
 1. `docs/work/work-log.md`
 2. `docs/work/handoff.md`
 
-### 8.4 做出重要决策后
+### 6.4 做出重要决策后
 
 应更新：
 
 1. `docs/memories/decisions.md`
 2. 如影响架构，同时更新 `docs/project/architecture.md`
 
-### 8.5 新增 PRD 后
+### 6.5 新增 PRD 后
 
 应更新：
 
@@ -292,7 +186,7 @@ API 变更后必须更新：
 
 ---
 
-## 9. 文档状态标记
+## 7. 文档状态标记
 
 长期文档应尽量带状态，避免 AI 误读过期内容。
 
@@ -310,7 +204,7 @@ PRD、issue、决策和工作交接文档应尽量标明状态。
 
 ---
 
-## 10. 冲突处理规则
+## 8. 冲突处理规则
 
 当不同文档之间出现冲突时，按以下优先级判断：
 
@@ -327,11 +221,11 @@ PRD、issue、决策和工作交接文档应尽量标明状态。
 
 ---
 
-## 11. AI 工作结束前的交接要求
+## 9. AI 工作结束前的交接要求
 
 AI 在完成一次任务前，应检查是否需要更新交接信息。
 
-如果任务涉及代码、需求、架构、问题修复或文档结构变化，应至少更新：
+如果任务涉及代码、需求、架构、问题修复或文档结构变化，应至少考虑更新：
 
 ```text
 docs/work/work-log.md
@@ -350,7 +244,7 @@ docs/work/handoff.md
 
 ---
 
-## 12. 最小文档维护原则
+## 10. 最小文档维护原则
 
 文档系统的目标是帮助项目长期演进，而不是制造额外负担。
 

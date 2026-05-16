@@ -1,5 +1,131 @@
 # Work Log
 
+## 2026-05-16 - 手机号池状态改为管理员手动控制
+
+目标：手机号不会因为一次激活/短信异常被自动作废；手机号是否作废由管理员在后台手机号池手动指定。
+
+已完成：
+
+- `server.js`
+  - 自助激活流程中，手机号被拒绝或短信异常时仍重试，但 `deletePhone=false`。
+  - 移除 `/api/run-process` 尝试阶段自动调用 `store.deletePhoneAsset()` 的逻辑。
+- `product_activator.js`
+  - 成品号激活流程中，手机号被拒绝或短信异常时仍重试，但 `deletePhone=false`。
+  - 移除成品号流程自动禁用手机号的逻辑。
+- `public/admin.html`
+  - 手机号池“状态”从只读徽标改为管理员可编辑下拉：`正常` / `已报废`。
+- `mysql-store.js`
+  - 保存手机号池时保留管理员选择的 `status`。
+  - `status='正常'` 归一化为 `is_active=1`，`status='已报废'` 归一化为 `is_active=0`。
+- `test/test_phone_assets_no_auto_disable.js`
+  - 覆盖自助流程和成品号流程遇到手机号拒绝/短信超时时不会自动作废手机号。
+- `test/test_phone_assets_admin_status.js`
+  - 覆盖手机号池管理员状态保存归一化。
+
+验证：
+
+- 已先运行新增测试并确认失败：
+  - `normalizePhonePool` 未暴露。
+  - 后台页面没有 `handlePhoneStatusChange`。
+- `node .\test\test_phone_assets_admin_status.js`：通过。
+- `node .\test\test_phone_assets_no_auto_disable.js`：通过。
+- `node .\test\test_card_admin_html_static.js`：通过。
+- `node .\test\test_card_assets_model.js`：通过。
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+- `node .\test\test_run_process_asset_settlement.js`：通过。
+- `node --check .\server.js`：通过。
+- `node --check .\product_activator.js`：通过。
+- `node --check .\mysql-store.js`：通过。
+- `public/admin.html` 内联脚本语法检查：通过。
+
+## 2026-05-16 - get_card_message 有效期格式归一化
+
+目标：修正卡密缓存中 `expiry_date` 为 `2030/4` 这类格式时，入库 `CARD_EXPIRY` 不应原样保存，而应转换成 PayPal 表单需要的 `MMYY`。
+
+已完成：
+
+- `get_card_message.js`
+  - 新增 `normalizeCardExpiryForDatabase()`。
+  - `formatCardForDatabase()` 写入 `CARD_EXPIRY` 前统一归一化。
+  - 支持 `2030/4`、`4/2030`、`03/30` 等格式转成 `0430` / `0330`。
+- `test/test_get_card_message_format.js`
+  - 覆盖 `2030/4 -> 0430`。
+  - 覆盖 `03/30 -> 0330`。
+  - 覆盖 `4/2030 -> 0430`。
+- `docs/project/get_card_message.md`
+  - 记录 `CARD_EXPIRY` 入库格式为 `MMYY`。
+
+验证：
+
+- 已先运行新增测试并确认失败：`normalizeCardExpiryForDatabase is not a function`。
+- `node .\test\test_get_card_message_format.js`：通过。
+- `node .\test\test_card_asset_registrar.js`：通过。
+- `node --check .\get_card_message.js`：通过。
+- 使用当前缓存 `card_records\4859-6E97-MXGT94ZS-A575.json` 验证，`CARD_EXPIRY` 输出为 `0430`。
+
+## 2026-05-16 - POST /api/run-process 卡资产结算顺序修正
+
+目标：核对 `POST /api/run-process` 在卡密兑换结构下是否仍有需要修改的点，并修正前台自助激活流程中“成功卡先释放锁、后标记已激活”的并发窗口。
+
+已完成：
+
+- `server.js`
+  - 新增 `settleRunProcessAssets()`，统一处理前台自助激活流程的卡资产结算。
+  - 激活成功时先调用 `markCardAssetActivated(cardAssetId, '')`，再更新手机号/银行卡成功次数，最后释放运行时资产锁。
+  - 银行卡被拒时先按 `cardAssetId/cardKey/cardNumber` 禁用卡，再释放运行时资产锁。
+  - 保留最终成功阶段的兜底回写，但正常成功路径不再等到最终收尾后才标记卡已激活。
+- `test/test_run_process_asset_settlement.js`
+  - 覆盖自助流程成功时 `mark -> increment -> release` 的顺序。
+  - 覆盖自助流程银行卡禁用时 `deleteCard -> release` 的顺序。
+- `docs/project/run-process-api-flow.md`
+  - 更新为 `cardAssetRegistrar.ensureRuntimeAssets()` 调用链。
+  - 补充未注册卡密兑换、`remark` 失败记录、BILLING 环境变量和先回写后释放锁的结算规则。
+- `docs/project/2026-05-16_银行卡池改为卡密兑换结构.md`
+  - 补充前台自助激活流程的资产结算顺序和新增测试。
+- `public/admin.html`
+  - 银行卡池新增管理员可编辑的“卡状态”下拉：`正常` / `已报废` / `兑换异常`。
+- `mysql-store.js`
+  - 保存银行卡池时保留管理员选择的 `status`。
+  - `status='正常'` 归一化为 `is_active=1`，其他状态归一化为 `is_active=0`。
+
+验证：
+
+- 已先运行新增测试并确认失败：`server should expose test helpers`，证明测试覆盖到尚未实现的行为。
+- `node .\test\test_run_process_asset_settlement.js`：通过。
+- `node .\test\test_card_asset_registrar.js`：通过。
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+- `node .\test\test_card_assets_model.js`：通过。
+- `node .\test\test_card_admin_html_static.js`：通过。
+- `node --check .\server.js`：通过。
+- `node --check .\card_asset_registrar.js`：通过。
+- `node --check .\mysql-store.js`：通过。
+- `node --check .\product_activator.js`：通过。
+- `public/admin.html` 内联脚本语法检查：通过。
+
+注意：
+
+- 本次不改变 `POST /api/run-process` 的请求/响应契约。
+- 前台自助流程没有账号邮箱上下文，因此激活账号仍写空字符串。
+- `product_activator.js` 没有直接使用 `is_activate` / `is_activated` 变量；它通过 `card_asset_registrar.ensureRuntimeAssets()` 获取已经由数据库筛选好的可用卡，并在成功后调用 `markCardAssetActivated()` 回写。
+
+## 2026-05-16 - POST /api/run-process 调用链文档
+
+目标：梳理用户侧自助激活接口 `POST /api/run-process` 的功能链调用流程，并写入项目技术文档。
+
+已完成：
+
+- 新增 `docs/project/run-process-api-flow.md`。
+- 梳理前端触发、后端同步校验、CDK 锁定、任务日志、运行时资产抢占、`index.js` 子进程执行、输出分析、重试、资产处理、WebSocket 进度广播和最终状态收尾。
+- 标明关键调用点的源码路径和行号。
+
+验证：
+
+- 文档基于 `server.js`、`mysql-store.js`、`index.js`、`chatgpt.js`、`public/index.html` 当前源码逐段核对。
+
+注意：
+
+- 本次只新增/更新文档，未修改业务代码。
+
 ## 2026-05-15 - PayPal 强制英文链路回退与风控诊断收敛
 
 目标：根据本地浏览器同 URL 不触发风控、自动化触发风控的现象，回退自动化侧额外强制英文与挑战处理干预，保留只读诊断日志。
@@ -128,6 +254,96 @@
 - `node --check index.js`：通过。
 - 静态断言确认登录邮箱、支付表单邮箱、手机号和校验重填都使用目标模式。
 
+## 2026-05-16 - 银行卡池改为卡密兑换结构
+
+目标：把后台“银行卡池”改成以卡密为入口的数据结构；批量导入只导入卡密，未兑换时 CARD/BILLING 字段为空，已激活卡不再被自动任务复用。
+
+已完成：
+
+- `public/admin.html`
+  - 银行卡池表格改为：卡密、是否注册、CARD/BILLING 字段、card_sms、是否激活、激活账号、兑换时间。
+  - 批量导入改为每行一个卡密，例如 `4859-F868-EMFMYMYY-B03E`。
+  - `是否注册` / `是否激活` 可手动切换；`激活账号` 只读。
+  - 修正 CARD/BILLING 字段不应显示为输入框的问题，改成只读文本。
+  - 增加前端旧数据兼容：后端仍返回旧 `number` 结构时，前端会用它兜底显示卡密，避免空白行。
+- `mysql-schema.sql` / `mysql-store.js`
+  - `card_assets` 新增卡密、注册状态、账单信息、激活状态、激活账号、兑换时间字段。
+  - 自动取卡条件改为：已注册、未激活、卡号/有效期/CVC 不为空、未禁用。
+  - 旧卡数据启动迁移为已注册卡，`card_key` 兼容填原卡号，避免已有可用卡直接失效。
+- `server.js` / `product_activator.js`
+  - 激活成功后把本次使用的卡标记为已激活。
+  - 成品号流程会写入激活账号邮箱；前台 token 激活流程无邮箱时只标记已激活。
+- `update-mysql-schema.js`
+  - 补充旧库升级字段。
+- `test/test_card_assets_model.js`
+  - 新增卡池归一化和取卡条件单元测试。
+
+验证：
+
+- `node .\test\test_card_assets_model.js`：通过。
+- `node --check mysql-store.js`：通过。
+- `node --check server.js`：通过。
+- `node --check product_activator.js`：通过。
+- `node --check update-mysql-schema.js`：通过。
+- `public/admin.html` 内联脚本语法检查：通过。
+- `node .\test\test_card_admin_html_static.js`：通过。
+
+## 2026-05-16 - 银行卡池前端修正与测试卡数据写入
+
+目标：修正银行卡池前端展示问题，并向当前 MySQL 数据库写入一条已注册、未激活的测试卡数据，便于后续真实流程验证。
+
+已完成：
+
+- `public/admin.html`
+  - CARD_NUMBER、CARD_EXPIRY、CARD_CVC、BILLING_*、card_sms、激活账号、兑换时间改为只读文本，不再显示为输入框。
+  - 仅保留可编辑项：
+    - 卡密
+    - 是否注册
+    - 是否激活
+  - 表格增加最小宽度，避免大量列被压缩到看不清。
+  - 前端增加 `normalizeCardForUi()`，兼容旧后端/旧数据返回的 `number` 字段，避免卡密列空白。
+  - 批量导入卡密校验改为每行一个非空字符串，降低误判。
+- `mysql-store.js`
+  - 保存卡池时兼容 `card_key`、`key`、`cardKey`、`number`、`card_number`，避免旧数据结构无法保存。
+- `test/test_card_admin_html_static.js`
+  - 新增静态回归测试，防止 CARD/BILLING 字段再次被渲染成可编辑输入框。
+- 数据库 `plus_papay.card_assets`
+  - 插入/更新测试卡：
+
+```text
+card_key: TEST-4859540166445568-0230-532
+is_registered: 1
+is_activated: 0
+is_active: 1
+status: 正常
+CARD_NUMBER: 4859540166445568
+CARD_EXPIRY: 02/30
+CARD_CVC: 532
+BILLING_COUNTRY: US
+BILLING_ADDRESS: 15810 Gale Ave
+BILLING_CITY: Hacienda Heights
+BILLING_STATE: CA
+BILLING_ZIP: 91745
+BILLING_NAME: DOMINIQUE CAMPBELL
+card_sms: 空
+```
+
+验证：
+
+- `node .\test\test_card_admin_html_static.js`：通过。
+- `node .\test\test_card_assets_model.js`：通过。
+- `node --check mysql-store.js`：通过。
+- `node --check server.js`：通过。
+- `node --check product_activator.js`：通过。
+- `node --check update-mysql-schema.js`：通过。
+- `public/admin.html` 内联脚本语法检查：通过。
+- 数据库查询确认测试卡已写入，`status` 为 UTF-8 正常显示的 `正常`。
+
+注意：
+
+- `BILLING_EMAIL` 当前不在 `card_assets` 表结构中，本次没有写入数据库。
+- 插入测试数据时发现 Windows PowerShell + Node 内联脚本容易破坏反引号和中文字面量，已记录到 `C:\Users\zp\.learnings\ERRORS.md`。
+
 ## 2026-05-15 - PayPal 中文页面自动切换英文与日志收敛
 
 目标：在 PayPal 跳转后如果页面是中文，先点击 English 切换到英文，再等待 `Create an Account`；同时压缩 PayPal locale 日志，避免完整 URL/JSON 刷屏。
@@ -156,6 +372,106 @@
 
 - `node --check index.js`：通过。
 - 静态断言确认语言检测函数、调用点、简洁日志和 debug JSON 开关存在。
+
+## 2026-05-16 - 成品号卡密资产回写并发窗口修正
+
+目标：修正成品号流程中“卡状态回写晚于释放资产锁”的并发窗口，并让卡资产禁用/成功计数优先按运行时预留行 `id` 定位。
+
+已完成：
+
+- `product_activator.js`
+  - 新增资产结算 helper：激活成功时先 `markCardAssetActivated(cardAssetId, email)`，再释放资产锁。
+  - 银行卡被拒需要禁用时，先按 `cardAssetId/cardKey/cardNumber` 禁用卡，再释放资产锁，降低并发复用风险。
+  - 成功次数更新传入 `cardAssetId` 与 `cardKey`，不再只依赖 `card_number`。
+- `mysql-store.js`
+  - 新增卡资产定位逻辑：优先 `id`，其次 `card_key`，最后兼容旧 `card_number`。
+  - `deleteCardAsset()` 支持对象参数，同时保留旧字符串参数兼容。
+  - `incrementAssetSuccessCount()` 支持按 `cardAssetId/cardKey/cardNumber` 更新卡成功次数。
+- `test/test_product_activator_asset_settlement.js`
+  - 覆盖“标记/禁用卡状态必须早于释放资产锁”的调用顺序。
+- `test/test_card_assets_model.js`
+  - 覆盖卡资产定位优先级。
+
+验证：
+
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+- `node .\test\test_card_assets_model.js`：通过。
+- `node --check product_activator.js`：通过。
+- `node --check mysql-store.js`：通过。
+
+## 2026-05-16 - card_assets 增加 remark 备注字段
+
+目标：为后续卡密兑换失败、接口返回异常或未知错误提供可排查的持久化备注字段。
+
+已完成：
+
+- `mysql-schema.sql`
+  - `card_assets` 新增 `remark TEXT NULL`。
+- `update-mysql-schema.js`
+  - 旧库升级时补充 `remark` 字段。
+- `mysql-store.js`
+  - 卡池归一化、后台读取、保存逻辑加入 `remark`。
+- `public/admin.html`
+  - 银行卡池表格新增“备注”只读列。
+  - 新增/导入卡密时默认 `remark=''`。
+- `test/test_card_assets_model.js`
+  - 覆盖 `remark` 归一化和未兑换卡默认空备注。
+- `test/test_card_admin_html_static.js`
+  - 覆盖后台表格需要展示备注字段。
+
+验证：
+
+- `node .\test\test_card_assets_model.js`：通过。
+- `node .\test\test_card_admin_html_static.js`：通过。
+- `node --check mysql-store.js`：通过。
+- `node --check update-mysql-schema.js`：通过。
+
+## 2026-05-16 - 接通 get_card_message 卡密兑换到运行时资产
+
+目标：当卡池没有已注册未激活可用卡时，自动使用未注册卡密调用 `get_card_message.js` 兑换，写回数据库后继续当前激活流程。
+
+已完成：
+
+- `card_asset_registrar.js`
+  - 新增运行时资产获取封装。
+  - 优先使用已有已注册未激活卡。
+  - 没有可用卡但已抢到手机号时，预留未注册卡密并调用 `getCardMessage(key, { live: true })`。
+  - 用 `formatCardForDatabase()` 转换 CARD/BILLING 字段。
+  - 兑换成功后写回 `card_assets`，并直接返回给当前任务使用。
+  - 兑换失败或缺少关键 CARD 字段时，写入 `remark`，标记 `status='兑换异常'` 并禁用该卡。
+- `mysql-store.js`
+  - 新增 `reserveUnregisteredCardAsset()`。
+  - 新增 `markCardAssetRegistered()`。
+  - 新增 `markCardAssetExchangeFailed()`。
+  - `reserveRuntimeAssets()` / `getRuntimeAssets()` 返回卡资产时包含 BILLING 字段。
+- `product_activator.js`
+  - 成品号流程改用 `card_asset_registrar.ensureRuntimeAssets()`。
+  - 向 `index.js` 子进程传递 `BILLING_COUNTRY/BILLING_ADDRESS/BILLING_CITY/BILLING_STATE/BILLING_ZIP/BILLING_NAME`。
+- `server.js`
+  - 自助 token 激活流程改用 `card_asset_registrar.ensureRuntimeAssets()`。
+  - 向 `index.js` 子进程传递 BILLING 字段。
+  - 禁用卡和成功次数统计补充 `cardAssetId/cardKey` 优先定位。
+- `test/test_card_asset_registrar.js`
+  - 覆盖已有可用卡不触发兑换。
+  - 覆盖无可用卡时兑换未注册卡密、写回数据并返回当前任务使用。
+- `docs/project/get_card_message.md`
+  - 补充当前项目运行时接入方式、失败处理和下游环境变量传递。
+
+验证：
+
+- `node .\test\test_card_asset_registrar.js`：通过。
+- `node .\test\test_card_assets_model.js`：通过。
+- `node .\test\test_card_admin_html_static.js`：通过。
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+- `node --check card_asset_registrar.js`：通过。
+- `node --check mysql-store.js`：通过。
+- `node --check product_activator.js`：通过。
+- `node --check server.js`：通过。
+
+注意：
+
+- 自动测试使用 mock `getCardMessage()`，不会请求真实兑换接口，也不会消耗真实卡密。
+- 真实兑换调用路径会使用 `{ live: true }`。
 
 ## 2026-05-15 - Stripe 提交后 HumanSecurity 等待日志
 

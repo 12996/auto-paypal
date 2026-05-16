@@ -8,6 +8,7 @@ const os = require('os');
 const WebSocket = require('ws');
 const axios = require('axios');
 const store = require('./mysql-store');
+const cardAssetRegistrar = require('./card_asset_registrar');
 const { listRecentEmailsForAdmin, fetchAccessDeactivatedEmails } = require('./pool-email-imap');
 const runtimeLog = require('./runtime-log');
 const { initializeImap, getImapAuthHeaders } = require('./imap-auth-microsoft');
@@ -733,6 +734,73 @@ function validateAccessToken(token) {
     return { valid: true };
 }
 
+async function settleRunProcessAssets(storeApi, runtimeAssets, outcome = {}) {
+    if (!runtimeAssets) {
+        return { cardMarked: false, cardDeleted: false, successCounted: false };
+    }
+
+    let cardMarked = false;
+    let cardDeleted = false;
+    let successCounted = false;
+
+    if (outcome.success && runtimeAssets.cardAssetId) {
+        try {
+            await storeApi.markCardAssetActivated(runtimeAssets.cardAssetId, '');
+            cardMarked = true;
+        } catch (err) {
+            if (typeof outcome.onMarkError === 'function') {
+                outcome.onMarkError(err);
+            }
+        }
+    }
+
+    if (!outcome.success && outcome.deleteCard && typeof storeApi.deleteCardAsset === 'function') {
+        try {
+            await storeApi.deleteCardAsset({
+                cardAssetId: runtimeAssets.cardAssetId,
+                cardKey: runtimeAssets.card?.key,
+                cardNumber: runtimeAssets.card?.number
+            });
+            cardDeleted = true;
+        } catch (err) {
+            if (typeof outcome.onDeleteError === 'function') {
+                outcome.onDeleteError(err);
+            }
+        }
+    }
+
+    if (outcome.success && typeof storeApi.incrementAssetSuccessCount === 'function') {
+        try {
+            await storeApi.incrementAssetSuccessCount({
+                phone: runtimeAssets.phone?.phone,
+                cardAssetId: runtimeAssets.cardAssetId,
+                cardKey: runtimeAssets.card?.key,
+                cardNumber: runtimeAssets.card?.number
+            });
+            successCounted = true;
+        } catch (err) {
+            if (typeof outcome.onIncrementError === 'function') {
+                outcome.onIncrementError(err);
+            }
+        }
+    }
+
+    try {
+        await storeApi.releaseRuntimeAssets({
+            phoneAssetId: runtimeAssets.phoneAssetId,
+            cardAssetId: runtimeAssets.cardAssetId
+        });
+    } catch (err) {
+        if (typeof outcome.onReleaseError === 'function') {
+            outcome.onReleaseError(err);
+        } else {
+            throw err;
+        }
+    }
+
+    return { cardMarked, cardDeleted, successCounted };
+}
+
 function encodeBase64Url(input) {
     return Buffer.from(input)
         .toString('base64')
@@ -961,7 +1029,7 @@ function analyzeProcessOutput(output, timedOut) {
             message: '手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: true,   // 手机号被拒 → 永久禁用，不再依赖 reachedPaypal
+            deletePhone: false,
             deleteCard: false
         };
     }
@@ -971,10 +1039,10 @@ function analyzeProcessOutput(output, timedOut) {
         || normalized.includes('手机号短信验证异常')) {
         return {
             status: 'retry',
-            message: '短信异常：手机号不可用，已禁用该号，准备重试',
+            message: '短信异常：手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: true,
+            deletePhone: false,
             deleteCard: false
         };
     }
@@ -2250,6 +2318,7 @@ app.post('/api/run-process', async (req, res) => {
             const checkoutScript = path.join(__dirname, 'index.js');
             let finalRun = null;
             let finalAssets = null;
+            let finalAssetsSettled = false;
             const allOutputs = [];
             let shouldRollbackCdk = true;
 
@@ -2272,7 +2341,9 @@ app.post('/api/run-process', async (req, res) => {
                     let assets = null;
                     const reserveDeadline = Date.now() + 5 * 60 * 1000;
                     while (Date.now() < reserveDeadline) {
-                        assets = await store.reserveRuntimeAssets(`self:${task.jobKey}:${attempt}`);
+                        assets = await cardAssetRegistrar.ensureRuntimeAssets({
+                            ownerKey: `self:${task.jobKey}:${attempt}`
+                        });
                         if (assets.phone.phone && assets.phone.phone !== '未配置' && assets.card.number) {
                             break;
                         }
@@ -2310,7 +2381,13 @@ app.post('/api/run-process', async (req, res) => {
                         PROXY: assets.proxy,
                         CARD_NUMBER: assets.card.number,
                         CARD_EXPIRY: assets.card.expiry,
-                        CARD_CVC: assets.card.cvc
+                        CARD_CVC: assets.card.cvc,
+                        BILLING_COUNTRY: assets.card.billing_country || '',
+                        BILLING_ADDRESS: assets.card.billing_address || '',
+                        BILLING_CITY: assets.card.billing_city || '',
+                        BILLING_STATE: assets.card.billing_state || '',
+                        BILLING_ZIP: assets.card.billing_zip || '',
+                        BILLING_NAME: assets.card.billing_name || ''
                     };
                     finalAssets = assets;
 
@@ -2373,20 +2450,31 @@ app.post('/api/run-process', async (req, res) => {
                         cardLast4: assets.card.number.slice(-4)
                     });
 
-                    if (run.analysis.deletePhone) {
-                        await store.deletePhoneAsset(assets.phone.phone);
-                        logTask(task.jobKey, `🚫 [资产] 手机号 ${assets.phone.phone} 被拒/拦截，已永久禁用 (status='已报废', is_active=0)`, 'warn');
-                    }
-                    if (run.analysis.deleteCard) {
-                        await store.deleteCardAsset(assets.card.number);
-                        logTask(task.jobKey, `🚫 [资产] 银行卡尾号 ${assets.card.number.slice(-4)} 被拒，已永久禁用 (status='已报废', is_active=0)`, 'warn');
-                    }
                     } finally {
-                        // 释放资产，让出手机号/银行卡给其他并发任务
-                        await store.releaseRuntimeAssets({
-                            phoneAssetId: assets.phoneAssetId,
-                            cardAssetId: assets.cardAssetId
-                        }).catch((err) => logTask(task.jobKey, `释放资产失败: ${err.message}`, 'warn'));
+                        // 先落库卡状态，再释放锁，避免并发任务抢到同一张刚成功的卡。
+                        const settlement = await settleRunProcessAssets(store, assets, {
+                            success: run?.analysis?.status === 'success',
+                            deleteCard: Boolean(run?.analysis?.deleteCard),
+                            onMarkError: (err) => logTask(task.jobKey, `更新银行卡激活状态失败: ${err.message}`, 'warn'),
+                            onDeleteError: (err) => logTask(task.jobKey, `禁用银行卡失败: ${err.message}`, 'warn'),
+                            onIncrementError: (err) => logTask(task.jobKey, `更新资产成功计数失败: ${err.message}`, 'warn'),
+                            onReleaseError: (err) => logTask(task.jobKey, `释放资产失败: ${err.message}`, 'warn')
+                        }).catch((err) => {
+                            logTask(task.jobKey, `结算资产失败: ${err.message}`, 'warn');
+                            return null;
+                        });
+                        if (settlement?.cardDeleted) {
+                            logTask(task.jobKey, `🚫 [资产] 银行卡尾号 ${assets.card.number.slice(-4)} 被拒，已永久禁用 (status='已报废', is_active=0)`, 'warn');
+                        }
+                        if (settlement?.cardMarked || settlement?.successCounted) {
+                            finalAssetsSettled = true;
+                            if (settlement.successCounted) {
+                                logTask(
+                                    task.jobKey,
+                                    `成功计数已更新 手机号=${assets.phone?.phone || 'N/A'} 银行卡尾号=${assets.card?.number ? assets.card.number.slice(-4) : 'N/A'}`
+                                );
+                            }
+                        }
                     }
                     if (!run.analysis.shouldRetry || attempt >= MAX_PROCESS_ATTEMPTS) {
                         logTask(task.jobKey, `尝试 ${attempt} 结束，status=${run.analysis.status} shouldRetry=${run.analysis.shouldRetry}`);
@@ -2432,9 +2520,14 @@ app.post('/api/run-process', async (req, res) => {
                     }
                 }
 
-                if (finalStatus === 'success' && finalAssets) {
+                if (finalStatus === 'success' && finalAssets && !finalAssetsSettled) {
+                    await store.markCardAssetActivated(finalAssets.cardAssetId, '').catch((err) => {
+                        logTask(task.jobKey, `更新银行卡激活状态失败: ${err.message}`, 'warn');
+                    });
                     await store.incrementAssetSuccessCount({
                         phone: finalAssets.phone?.phone,
+                        cardAssetId: finalAssets.cardAssetId,
+                        cardKey: finalAssets.card?.key,
                         cardNumber: finalAssets.card?.number
                     });
                     logTask(
@@ -2770,3 +2863,10 @@ if (process.env.IS_PRODUCT_FLOW === 'true') {
         process.exit(1);
     });
 }
+
+module.exports = {
+    __test: {
+        analyzeProcessOutput,
+        settleRunProcessAssets
+    }
+};

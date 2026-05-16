@@ -1,0 +1,27 @@
+{
+  "key": "KW-9A99-HHU4EPMG-A337",
+  "requested_at": "2026-05-16T15:09:34.030Z",
+  "http_status": 200,
+  "ok": true,
+  "raw_text": "{\"success\":true,\"card\":{\"key\":\"KW-9A99-HHU4EPMG-A337\",\"category\":\"4859\",\"expires_at\":\"2026-05-16T16:09:35.000Z\",\"activated_at\":\"2026-05-16T15:09:35.000Z\",\"status\":\"used\"},\"content\":{\"card_number\":\"4859540139547292\",\"expiry_date\":\"2030/5\",\"cvv\":\"241\",\"phone\":\"+19089876841\",\"sms_api\":\"http://a.62-us.com/api/get_sms?key=5e9d237abe92399bf0e8a18a67331fdb\",\"name\":\"KAYLA BENTLEY\",\"address\":\"2389 N Lakefront Drive,HERNANDO 34442,US\"}}",
+  "json": {
+    "success": true,
+    "card": {
+      "key": "KW-9A99-HHU4EPMG-A337",
+      "category": "4859",
+      "expires_at": "2026-05-16T16:09:35.000Z",
+      "activated_at": "2026-05-16T15:09:35.000Z",
+      "status": "used"
+    },
+    "content": {
+      "card_number": "4859540139547292",
+      "expiry_date": "2030/5",
+      "cvv": "241",
+      "phone": "+19089876841",
+      "sms_api": "http://a.62-us.com/api/get_sms?key=5e9d237abe92399bf0e8a18a67331fdb",
+      "name": "KAYLA BENTLEY",
+      "address": "2389 N Lakefront Drive,HERNANDO 34442,US"
+    }
+  },
+  "sms_api": "http://a.62-us.com/api/get_sms?key=5e9d237abe92399bf0e8a18a67331fdb"
+}
