@@ -256,6 +256,7 @@
 - 卡密兑换已接入运行时资产获取；自动测试使用 mock，不请求真实接口。
 - 真实兑换路径会用 `getCardMessage(key, { live: true })`，会请求外部兑换接口。
 - 旧库升级可直接启动服务触发 `mysql-store.js` 的兼容迁移，也可运行 `node .\update-mysql-schema.js`。
+- 2026-05-17 修复 PayPal 创建账户邮箱输入框定位：失败页面中邮箱框为 `input#email` / `name="login_email"` / `type="email"`，旧的 `getByRole('textbox', { name: 'Enter email' })` 过窄，已改为可见 email input 选择器兜底。
 
 ## 推荐下一步
 

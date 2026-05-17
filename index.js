@@ -2282,8 +2282,33 @@ async function run(options = {}) {
         await page.waitForTimeout(randomDelay(1000, 2000));
         // PayPal 邮箱使用 fill 模式，避免逐字符输入触发格式化/风控抖动
         try {
-            const emailInput = page.getByRole('textbox', { name: 'Enter email' });
-            await emailInput.waitFor({ state: 'visible', timeout: 10000 });
+            const emailSelectors = [
+                'input#email',
+                'input[name="login_email"]',
+                'input[type="email"]',
+                'input[name*="email" i]',
+                'input[placeholder*="Email" i]'
+            ];
+            const deadline = Date.now() + 10000;
+            let emailInput = null;
+            while (!emailInput && Date.now() < deadline) {
+                for (const selector of emailSelectors) {
+                    const matches = page.locator(selector);
+                    const count = await matches.count().catch(() => 0);
+                    for (let i = 0; i < count; i++) {
+                        const candidate = matches.nth(i);
+                        if (await candidate.isVisible().catch(() => false)) {
+                            emailInput = candidate;
+                            break;
+                        }
+                    }
+                    if (emailInput) break;
+                }
+                if (!emailInput) await page.waitForTimeout(250);
+            }
+            if (!emailInput) {
+                throw new Error(`未找到可见邮箱输入框，selectors=${emailSelectors.join(', ')}`);
+            }
             await humanFillInput(page, emailInput, CONFIG.billing.email, false, true);
         } catch (e) {
             await debug.saveOnError(page, 'paypal_email_input');

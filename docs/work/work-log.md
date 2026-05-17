@@ -473,6 +473,35 @@ card_sms: 空
 - 自动测试使用 mock `getCardMessage()`，不会请求真实兑换接口，也不会消耗真实卡密。
 - 真实兑换调用路径会使用 `{ live: true }`。
 
+## 2026-05-17 - PayPal 邮箱输入框定位兼容修复
+
+目标：排查 `PayPal 邮箱输入框定位失败: getByRole('textbox', { name: 'Enter email' })`。
+
+已完成：
+
+- 检查异常截图 `debug_screenshots/激活/error_1779007858776.png`，页面实际已显示 `Email` 输入框和 `Continue to Payment` 按钮。
+- 检查保存页面 `debug_html/Log in to your PayPal account.mhtml`，当前 DOM 中邮箱框为：
+  - `input#email`
+  - `name="login_email"`
+  - `type="email"`
+  - `placeholder="Email or mobile number"`
+- `index.js`
+  - 将单一 role/name 定位 `getByRole('textbox', { name: 'Enter email' })` 改为可见 email input 选择器兜底：
+    - `input#email`
+    - `input[name="login_email"]`
+    - `input[type="email"]`
+    - `input[name*="email" i]`
+    - `input[placeholder*="Email" i]`
+
+验证：
+
+- `node --check index.js`：通过。
+- MHTML 证据确认新选择器可命中当前失败页面中的邮箱输入框。
+
+注意：
+
+- 根因是 PayPal 当前页面的邮箱输入框 accessible name/label 不是 `Enter email`，而是 `Email or mobile number`/`Email` 相关文案；旧定位器过窄。
+
 ## 2026-05-15 - Stripe 提交后 HumanSecurity 等待日志
 
 目标：解释 `✅ [安全] 最终检查通过，准备点击按钮` 后看似卡顿的原因。
