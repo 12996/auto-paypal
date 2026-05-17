@@ -75,7 +75,7 @@ for (let i = 0; i < 100; i += 1) {
     );
 }
 
-assert(seenProfiles.size >= 2, 'limited random generation should select from at least two complete profiles');
+assert.strictEqual(seenProfiles.size, 1, 'California baseline should stay fixed to one internally consistent profile');
 
 const languageConfig = {
     ...CaliforniaFingerprint.generateRandomCaliforniaFingerprint({ chromeVersion: '133.0.6943.16' }),
@@ -84,8 +84,8 @@ const languageConfig = {
 const languageOptions = CaliforniaFingerprint.getPlaywrightOptions(languageConfig);
 assert.strictEqual(
     languageOptions.extraHTTPHeaders['Accept-Language'],
-    undefined,
-    'Playwright options should not force an explicit Accept-Language header'
+    'en-US',
+    'Playwright options should force the California English baseline Accept-Language'
 );
 
 const inconsistentConfig = CaliforniaFingerprint.generateRandomCaliforniaFingerprint({ chromeVersion: '133.0.6943.16' });
