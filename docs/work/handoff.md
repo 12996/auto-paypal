@@ -2,6 +2,68 @@
 
 状态：active
 
+## 本次任务补充：代理桥接链路排查
+
+目标：排查后台代理测试成功，但 `local-proxy-bridge.js` 日志出现 `→ :1080 → 目标` 和 `read ECONNRESET` 的原因。
+
+已完成：
+
+- `chatgpt.js`
+  - 经用户确认，支付长链生成的正确本地代理是 `http://127.0.0.1:7891`，不是 `7897`。
+- `local-proxy-bridge.js`
+  - `parseProxyUrl()` 增加 host/port 必填校验。
+  - 代理 URL 缺 host 或缺 port 时直接返回 `null`，不再静默落到 `:1080`。
+- `test/test_local_proxy_bridge_parse.js`
+  - 新增代理 URL 解析回归测试。
+
+验证：
+
+- `node .\test\test_local_proxy_bridge_parse.js`：通过。
+- `node .\test\test_chatgpt_create_order.js`：通过。
+- `node --check .\local-proxy-bridge.js`：通过。
+- `node --check .\chatgpt.js`：通过。
+- `rg -n -S "127\.0\.0\.1:7891|127\.0\.0\.1:7897|DEFAULT_PROXY_URL" chatgpt.js README.md docs\work docs\project test`：确认支付长链默认代理已统一到 `7891`；`7897` 只保留在其他代理桥接链路说明中。
+
+注意：
+
+- 如果日志仍显示 `VPN(http://:7897) → :1080`，优先检查后台代理池实际保存的代理 URL，必须包含协议、账号、密码、host、port，例如 `socks5://USER:PASS@us2.cliproxy.io:3010`。
+- 如果日志显示远程代理为 `us2.cliproxy.io:3010` 但仍 `read ECONNRESET`，问题在代理桥接用的本机 `7897` 上游代理或远程 SOCKS5 链路，需要继续用单步连通性测试定位；这和 `chatgpt.js` 支付长链的 `7891` 是两条链路。
+
+## 本次任务补充：chatgpt.js 改用 ChatGPT checkout 长链提取
+
+目标：按 `get_stripe.js` 的实现方式重构 `chatgpt.js` 的订单创建逻辑，但不改变原函数返回参数。
+
+已完成：
+
+- `chatgpt.js`
+  - `_createOrder()` 改为固定通过 `http://127.0.0.1:7891` 代理访问 ChatGPT checkout API。
+  - POST `https://chatgpt.com/backend-api/payments/checkout`，payload 使用 Plus + PayPal hosted checkout。
+  - 成功时仍返回支付长链接字符串；失败时仍返回 `null`。
+  - 响应字段兼容 `url` / `stripe_hosted_url` / `checkout_url`。
+  - 保留 3 次重试和原有调用入口 `getPayPalApprovalUrl()`。
+- `test/test_chatgpt_create_order.js`
+  - 覆盖代理、checkout URL、授权头、payload 和返回值兼容性。
+- `test/test_generate_payurl.js`
+  - 更新为直接测试 `ChatGPTService` 新链路。
+- `docs/project/run-process-api-flow.md`
+  - 同步订单创建链路说明。
+- `README.md`
+  - 新增“支付链接生成代理”说明，写明修改 `chatgpt.js` 中 `DEFAULT_PROXY_URL` 的方法。
+
+验证：
+
+- `node .\test\test_chatgpt_create_order.js`：通过。
+- `node -c .\chatgpt.js`：通过。
+- `node -c .\test\test_chatgpt_create_order.js`：通过。
+- `node .\test\test_generate_payurl.js --help`：通过。
+- `node .\test\test_generate_payurl.js`：无 token 时按预期显示用法并退出 1。
+- `README.md` 已补充代理修改说明。
+
+注意：
+
+- 真实生成长链需要有效 `CHATGPT_TOKEN`，且本机代理 `http://127.0.0.1:7891` 可用。
+- 当前工作区仍有接手前未跟踪/已修改文件，不要误删：`get_stripe.js`、`test/test_get_stripe.js`、`test/test_paypal_payment_form.js` 等。
+
 ## 本次任务补充：手机号池状态改为管理员手动控制
 
 目标：手机号不会因为一次激活/短信异常被自动作废；手机号是否可用由管理员在后台手机号池指定。
@@ -251,6 +313,7 @@
 
 ## 当前注意点
 
+- 2026-05-18 已重写 `README.md` 的启动和配置说明：仓库地址以当前 `origin` 为准，启动推荐 `npm start`，`.env` 只保留最小必填和调试变量说明；生产资产、代理、邮箱池优先从后台配置/数据库维护。
 - `激活账号` 当前只在成品号自动创建流程中能自动写入邮箱。
 - 前台用户自带 token 激活流程没有可用邮箱上下文，因此只标记 `是否激活=是`，`激活账号` 为空。
 - 卡密兑换已接入运行时资产获取；自动测试使用 mock，不请求真实接口。

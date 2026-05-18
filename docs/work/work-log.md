@@ -426,6 +426,69 @@ card_sms: 空
 - `node --check mysql-store.js`：通过。
 - `node --check update-mysql-schema.js`：通过。
 
+## 2026-05-17 - ChatGPT checkout 长链提取接入 chatgpt.js
+
+目标：按 `get_stripe.js` 的长链提取方式重构 `chatgpt.js`，但保持原函数返回值不变。
+
+已完成：
+
+- `chatgpt.js`
+  - `_createOrder()` 改为调用 `https://chatgpt.com/backend-api/payments/checkout`。
+  - 固定使用 `http://127.0.0.1:7891` 代理，不读取 `process.env.PROXY`。
+  - 保持 `getPayPalApprovalUrl()` / `_createOrder()` 成功返回支付长链接字符串、失败返回 `null`。
+  - 响应中按 `url` / `stripe_hosted_url` / `checkout_url` 提取长链接。
+  - 保留最多 3 次重试。
+- `test/test_chatgpt_create_order.js`
+  - 新增 mock Playwright request context 的回归测试，验证代理、checkout URL、请求头、payload 和返回值兼容性。
+- `test/test_generate_payurl.js`
+  - 更新为直接通过 `ChatGPTService` 测试新链路，不再从环境变量读取代理。
+- `docs/project/run-process-api-flow.md`
+  - 更新订单创建段落，移除旧 `payurl.779.chat` 描述。
+- `README.md`
+  - 新增“支付链接生成代理”说明，写明 `chatgpt.js` 使用代码内固定代理 `DEFAULT_PROXY_URL`，以及如何修改和单测。
+
+验证：
+
+- 新增测试先失败：旧 `_createOrder()` 仍依赖构造函数传入的 `request.post()`。
+- `node .\test\test_chatgpt_create_order.js`：通过。
+- `node -c .\chatgpt.js`：通过。
+- `node -c .\test\test_chatgpt_create_order.js`：通过。
+- `node .\test\test_generate_payurl.js --help`：通过。
+- `node .\test\test_generate_payurl.js`：无 token 时按预期退出码 1 并显示用法。
+- `README.md` 已补充代理修改说明。
+
+注意：
+
+- 真实长链测试仍需要传入有效 `CHATGPT_TOKEN`，且本机 `http://127.0.0.1:7891` 代理可用。
+- `get_stripe.js` 和 `test/test_get_stripe.js` 是接手前已有未跟踪文件，本次未修改。
+
+## 2026-05-17 - 代理桥接链路排查
+
+目标：排查后台代理测试成功，但 `local-proxy-bridge.js` 日志出现 `→ :1080 → 目标` 和 `read ECONNRESET` 的原因。
+
+已完成：
+
+- `chatgpt.js`
+  - 经用户确认，支付长链生成的正确本地代理是 `http://127.0.0.1:7891`，已同步 README、测试和项目文档。
+- `local-proxy-bridge.js`
+  - `parseProxyUrl()` 增加远程代理 host/port 必填校验。
+  - 避免代理 URL 缺 host 时被静默解析为 `:1080`，导致日志误导和后续连接失败。
+- `test/test_local_proxy_bridge_parse.js`
+  - 新增代理 URL 解析测试，覆盖正常 SOCKS5 URL、缺 host、缺 port。
+
+判断：
+
+- 看到日志 `链路: 浏览器 → :10900 → VPN(http://:7897) → :1080 → 目标` 时，说明传入桥接模块的远程代理 URL 不完整；正确链路应显示类似 `→ us2.cliproxy.io:3010 → 目标`。
+- 若代理桥接链路里远程 host/port 正确但仍 `read ECONNRESET`，再排查桥接链路上游 HTTP 代理 `127.0.0.1:7897` 的规则、DNS 和是否允许 CONNECT 到远程 SOCKS5；这和 `chatgpt.js` 支付长链的 `7891` 是两条链路。
+
+验证：
+
+- `node .\test\test_local_proxy_bridge_parse.js`：通过。
+- `node .\test\test_chatgpt_create_order.js`：通过。
+- `node --check .\local-proxy-bridge.js`：通过。
+- `node --check .\chatgpt.js`：通过。
+- `rg -n -S "127\.0\.0\.1:7891|127\.0\.0\.1:7897|DEFAULT_PROXY_URL" chatgpt.js README.md docs\work docs\project test`：确认支付长链默认代理已统一到 `7891`；`7897` 只保留在其他代理桥接链路说明中。
+
 ## 2026-05-16 - 接通 get_card_message 卡密兑换到运行时资产
 
 目标：当卡池没有已注册未激活可用卡时，自动使用未注册卡密调用 `get_card_message.js` 兑换，写回数据库后继续当前激活流程。
@@ -516,3 +579,20 @@ card_sms: 空
 验证：
 
 - `node --check index.js`：通过。
+
+## 2026-05-18 - README 启动与配置说明修正
+
+目标：修正 README 中不符合当前仓库事实的仓库地址、启动方式和 `.env` 配置说明。
+
+已完成：
+
+- `README.md`
+  - 仓库地址改为当前 `origin`：`git@github.com:12996/auto-paypal.git`。
+  - 启动方式改为 `npm start` / `npm run start:headful`，不再推荐把 DB 环境变量全部写在启动命令中。
+  - 重写 `.env` 配置说明，明确最小必填项、后台配置优先级、邮箱模式、Gmail IMAP 使用条件。
+  - 移除不存在的截图和赞赏图引用。
+  - 明确项目没有内置 IMAP Server，只是 IMAP 客户端或远程 IMAP 管理 API 客户端。
+
+验证：
+
+- `rg` 检查旧 GitHub 地址、赞赏图、缺失截图引用已移除。

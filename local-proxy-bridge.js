@@ -25,9 +25,15 @@ let currentConfig = null;
 function parseProxyUrl(proxyUrl) {
     try {
         const url = new URL(proxyUrl);
+        if (!url.hostname) {
+            throw new Error('缺少代理主机名');
+        }
+        if (!url.port) {
+            throw new Error('缺少代理端口');
+        }
         return {
             host: url.hostname,
-            port: parseInt(url.port) || 1080,
+            port: parseInt(url.port, 10),
             userId: decodeURIComponent(url.username || ''),
             password: decodeURIComponent(url.password || ''),
             protocol: url.protocol.replace(':', '')

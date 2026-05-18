@@ -11,35 +11,38 @@
  * - 需要真实提交表单时显式加 --submit。
  */
 
-const fs = require('fs');
-const path = require('path');
-const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-
-require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
-
+// 设置环境变量并启动 index.js
 const env = {
     ...process.env,
-    HEADFUL: process.env.HEADFUL || '1',
+    CHATGPT_TOKEN: token,
+    HEADFUL: process.env.HEADFUL || '1',  // 默认显示浏览器
 
+    // 真实的加州洛杉矶地址信息
     BILLING_COUNTRY: process.env.BILLING_COUNTRY || 'US',
     BILLING_ADDRESS: process.env.BILLING_ADDRESS || '15810 Gale Ave',
     BILLING_CITY: process.env.BILLING_CITY || 'Hacienda Heights',
     BILLING_STATE: process.env.BILLING_STATE || 'CA',
     BILLING_ZIP: process.env.BILLING_ZIP || '91745',
     BILLING_NAME: process.env.BILLING_NAME || 'DOMINIQUE CAMPBELL',
-    BILLING_EMAIL: process.env.BILLING_EMAIL || `paypaltest${Date.now()}@hotmail.com`,
+    BILLING_EMAIL: process.env.BILLING_EMAIL || '', // 会自动生成随机邮箱
 
+    // 测试银行卡信息（Stripe 测试卡号）
     CARD_NUMBER: process.env.CARD_NUMBER || '4859540166445568',
     CARD_EXPIRY: process.env.CARD_EXPIRY || '02/30',
     CARD_CVC: process.env.CARD_CVC || '532',
 
-    PAYPAL_PASSWORD: process.env.PAYPAL_PASSWORD || '123qwe456qsd',
+    // PayPal 和短信
+    PAYPAL_PASSWORD: process.env.PAYPAL_PASSWORD || "",
     SMS_API_KEY: process.env.SMS_API_KEY || 'http://a.62-us.com/api/get_sms?key=f8f47a39ee7d6bcccae09b6350a754ff',
     BILLING_PHONE: process.env.BILLING_PHONE || '8352755872'
 };
 
-Object.assign(process.env, env);
+const fs = require('fs');
+const path = require('path');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+
+require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 
 const CaliforniaFingerprint = require('../lib/california-fingerprint');
 const debug = require('./debug_helper');

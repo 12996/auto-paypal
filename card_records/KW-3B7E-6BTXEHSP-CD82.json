@@ -1,0 +1,27 @@
+{
+  "key": "KW-3B7E-6BTXEHSP-CD82",
+  "requested_at": "2026-05-17T08:44:39.533Z",
+  "http_status": 200,
+  "ok": true,
+  "raw_text": "{\"success\":true,\"card\":{\"key\":\"KW-3B7E-6BTXEHSP-CD82\",\"category\":\"4859\",\"expires_at\":\"2026-05-17T09:44:40.000Z\",\"activated_at\":\"2026-05-17T08:44:40.000Z\",\"status\":\"used\"},\"content\":{\"card_number\":\"4859540163308991\",\"expiry_date\":\"2030/1\",\"cvv\":\"981\",\"phone\":\"+12207995967\",\"sms_api\":\"http://a.62-us.com/api/get_sms?key=6c580ad8a14179ea4444dfac0fb8620b\",\"name\":\"BRIDGET HAYES\",\"address\":\"72 Willow Way,Albrightsville 18210,US\"}}",
+  "json": {
+    "success": true,
+    "card": {
+      "key": "KW-3B7E-6BTXEHSP-CD82",
+      "category": "4859",
+      "expires_at": "2026-05-17T09:44:40.000Z",
+      "activated_at": "2026-05-17T08:44:40.000Z",
+      "status": "used"
+    },
+    "content": {
+      "card_number": "4859540163308991",
+      "expiry_date": "2030/1",
+      "cvv": "981",
+      "phone": "+12207995967",
+      "sms_api": "http://a.62-us.com/api/get_sms?key=6c580ad8a14179ea4444dfac0fb8620b",
+      "name": "BRIDGET HAYES",
+      "address": "72 Willow Way,Albrightsville 18210,US"
+    }
+  },
+  "sms_api": "http://a.62-us.com/api/get_sms?key=6c580ad8a14179ea4444dfac0fb8620b"
+}

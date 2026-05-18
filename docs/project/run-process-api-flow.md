@@ -214,12 +214,13 @@ BILLING_NAME    = 账单姓名
 - 调用 `getPayPalApprovalUrl()`：`index.js:534`
 - 如果没有得到 PayPal URL，抛出 `无法获取 PayPal 审批链接`：`index.js:536-538`
 
-`ChatGPTService` 实际调用外部订单 API：
+`ChatGPTService` 实际调用 ChatGPT checkout API：
 
-- `orderApiUrl = https://payurl.779.chat/api/request`：`chatgpt.js:10`
-- `_createOrder()` POST `{ token, plus: true }`：`chatgpt.js:34-47`
-- 响应 `status === 'success'` 时取 `openai_payurl`：`chatgpt.js:66-105`
-- 最多重试 3 次：`chatgpt.js:11`、`chatgpt.js:37-38`
+- 固定通过 `http://127.0.0.1:7891` 代理创建 Playwright APIRequestContext：`chatgpt.js:4`、`chatgpt.js:99-101`
+- 先请求 `https://chatgpt.com` 建立上下文，再 POST `https://chatgpt.com/backend-api/payments/checkout`：`chatgpt.js:3`、`chatgpt.js:104-119`
+- 请求体使用 Plus + PayPal hosted checkout payload：`chatgpt.js:8-25`
+- 响应中按 `url` / `stripe_hosted_url` / `checkout_url` 提取支付长链接：`chatgpt.js:169`
+- 最多重试 3 次：`chatgpt.js:72`、`chatgpt.js:89`
 
 ### 8.2 Stripe/PayPal 自动化
 
