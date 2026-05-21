@@ -2,6 +2,47 @@
 
 状态：active
 
+## 本次任务补充：PayPal 填写流程改为组件填充
+
+目标：只改 `index.js` 的 PayPal 填写段，把 PayPal 登录邮箱和支付表单填写从模拟人工输入改为组件填充，并保留旧逻辑注释以便回滚。
+
+已完成：
+
+- `index.js`
+  - 新增 PayPal 专用组件填充 helper：
+    - `componentFillPayPalInput()`
+    - `componentSelectPayPalOption()`
+    - `setPayPalComponentValue()`
+    - `fillPayPalEmailFromVisibleCandidates()`
+  - PayPal 邮箱框不再直接调用 `locator.fill()`；改为 native value setter 写入 React 控制字段后触发 `input/change/blur`。
+  - PayPal 登录邮箱不再只选第一个可见 `input#email`，而是逐个可见候选试填并校验，适配截图中 placeholder 为 `Email` 的页面。
+  - PayPal 支付信息页字段改为 `paypalFieldSelectors` 候选选择器，适配当前页面中没有 `#expiryDate` 但有 `placeholder="Expiration date"` 的 DOM。
+  - PayPal 登录邮箱改为组件填充。
+  - PayPal 支付表单字段改为固定顺序组件填充/选择：
+    - First Name / Last Name
+    - Card Number / Expiry / CVC
+    - Email / Phone
+    - Address / City / State / ZIP
+    - Password
+  - 提交前校验失败时使用组件填充修正。
+  - 删除 PayPal 填写段里的随机字段顺序、鼠标移动、逐字符输入和提交前随机滚动。
+  - 用 `LEGACY_PAYPAL_MANUAL_FILL_FLOW` 注释保留旧 PayPal 手动填写核心逻辑。
+- `test/test_paypal_component_fill_static.js`
+  - 新增静态测试，锁定 PayPal 填写段必须使用组件填充，避免旧模拟逻辑回流。
+
+验证：
+
+- 新测试先失败：`index.js should expose a PayPal component input fill helper`。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+- `node --check .\index.js`：通过。
+- `node --check .\test\test_paypal_component_fill_static.js`：通过。
+- `git diff --check -- index.js test\test_paypal_component_fill_static.js`：通过。
+
+注意：
+
+- Stripe 段未改，仍保留现有 `humanFillInput()` 等逻辑。
+- 本次未跑真实支付链路；如需验真实页面，建议从 PayPal signup 支付信息页专项脚本开始，并使用 mock/测试环境数据。
+
 ## 本次任务补充：银行卡每次直接请求接口
 
 目标：运行时不再从数据库查询或复用银行卡；每次拿到手机号后都直接请求新银行卡接口。

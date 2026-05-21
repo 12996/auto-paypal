@@ -1,5 +1,36 @@
 # Work Log
 
+## 2026-05-21 - PayPal 填写流程改为组件填充
+
+目标：只调整 `index.js` 的 PayPal 填写段，删除 PayPal 段里的模拟手动输入/随机顺序/逐字符输入行为，改为组件级 `fill/select` + 事件触发。
+
+已完成：
+
+- `index.js`
+  - 新增 `componentFillPayPalInput()`、`componentSelectPayPalOption()`。
+  - 补充 `setPayPalComponentValue()`，通过 native value setter 写入 React 控制字段并触发 `input/change/blur`，避免 PayPal 邮箱框 `locator.fill()` 超时或写入后值仍为空。
+  - PayPal 登录邮箱改为 `fillPayPalEmailFromVisibleCandidates()`：逐个可见候选输入框试填并校验，不再只信任第一个可见 `input#email`。
+  - PayPal 支付信息页改为 `paypalFieldSelectors` 候选选择器，不再依赖单一 `#expiryDate` / `#cvv` / `#billingLine1` 等 id；兼容当前页面的 `Expiration date`、`CVV`、`Street address`、`ZIP code` placeholder。
+  - PayPal 登录邮箱、银行卡、有效期、CVC、姓名、邮箱、手机号、地址、City/State/ZIP、密码统一走组件填充/组件选择。
+  - PayPal 表单提交前校验失败时，也使用组件填充修正，不再回退到 `humanFillInput()`。
+  - 删除 PayPal 填写段里的随机字段顺序、鼠标漫游、逐字符 `keyboard.type()`、提交前随机滚动。
+  - 用 `LEGACY_PAYPAL_MANUAL_FILL_FLOW` 注释保留旧 PayPal 手动填写核心逻辑，方便需要时恢复。
+- `test/test_paypal_component_fill_static.js`
+  - 新增静态回归测试，防止 PayPal 账单填充段重新引入旧手动模拟逻辑。
+
+验证：
+
+- 新增测试先失败：缺少 `componentFillPayPalInput()`。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+- `node --check .\index.js`：通过。
+- `node --check .\test\test_paypal_component_fill_static.js`：通过。
+- `git diff --check -- index.js test\test_paypal_component_fill_static.js`：通过。
+
+注意：
+
+- 本次只改 PayPal 段；Stripe 填写段仍保留原有 `humanFillInput()` 等逻辑。
+- 未运行真实 PayPal/Stripe 外部链路；验证仅覆盖语法和静态回归。
+
 ## 2026-05-21 - 银行卡每次直接请求接口
 
 目标：运行时不再从数据库查询/复用银行卡，每次任务拿到手机号后都直接请求新银行卡接口。
