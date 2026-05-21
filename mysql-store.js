@@ -1056,6 +1056,54 @@ async function markCardAssetRegistered(cardAssetId, cardData = {}) {
     );
 }
 
+async function insertRegisteredCardAsset(cardData = {}, options = {}) {
+    const cardKey = String(cardData.card_key || cardData.cardKey || `meiguodizhi-${Date.now()}`).trim().slice(0, 64);
+    const ownerKey = String(options.ownerKey || '').trim().slice(0, 64) || null;
+    const result = await runExecute(
+        `INSERT INTO card_assets (
+            card_key,
+            is_registered,
+            card_number,
+            card_expiry,
+            card_cvc,
+            billing_country,
+            billing_address,
+            billing_city,
+            billing_state,
+            billing_zip,
+            billing_name,
+            card_sms,
+            is_activated,
+            activation_account,
+            redeemed_at,
+            remark,
+            sort_order,
+            is_active,
+            status,
+            in_use,
+            locked_at,
+            locked_by
+         )
+         VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', CURRENT_TIMESTAMP, ?, 0, 1, '正常', 1, CURRENT_TIMESTAMP, ?)`,
+        [
+            cardKey,
+            String(cardData.CARD_NUMBER || cardData.card_number || ''),
+            String(cardData.CARD_EXPIRY || cardData.card_expiry || ''),
+            String(cardData.CARD_CVC || cardData.card_cvc || ''),
+            String(cardData.BILLING_COUNTRY || cardData.billing_country || ''),
+            String(cardData.BILLING_ADDRESS || cardData.billing_address || ''),
+            String(cardData.BILLING_CITY || cardData.billing_city || ''),
+            String(cardData.BILLING_STATE || cardData.billing_state || ''),
+            String(cardData.BILLING_ZIP || cardData.billing_zip || ''),
+            String(cardData.BILLING_NAME || cardData.billing_name || ''),
+            String(cardData.card_sms || ''),
+            String(cardData.remark || ''),
+            ownerKey
+        ]
+    );
+    return Number(result.insertId || 0);
+}
+
 async function markCardAssetExchangeFailed(cardAssetId, remark, status = '兑换异常') {
     if (!cardAssetId) {
         return;
@@ -1128,6 +1176,34 @@ async function reserveUnregisteredCardAsset(ownerKey = '') {
                 }
             }
             : null;
+    });
+}
+
+async function reserveRuntimePhoneAssets(ownerKey = '') {
+    return withTransaction(async (connection) => {
+        const [phoneRow, proxyRows] = await Promise.all([
+            reserveAssetRow(connection, 'phone_assets', ['phone', 'sms_api_key', 'usage_count'], ownerKey),
+            connection.query(`SELECT config_value FROM app_config WHERE config_key = ? LIMIT 1`, ['proxy']).then(r => r[0])
+        ]);
+
+        const proxyList = String(proxyRows[0]?.config_value || '')
+            .split(/\r?\n/)
+            .map(p => p.trim())
+            .filter(p => p.length > 0);
+
+        return {
+            phoneAssetId: phoneRow?.id || null,
+            cardAssetId: null,
+            phone: phoneRow
+                ? {
+                    phone: phoneRow.phone,
+                    key: phoneRow.sms_api_key,
+                    usage_count: Number(phoneRow.usage_count || 0)
+                }
+                : { phone: '未配置', key: '', usage_count: 0 },
+            card: { number: '', expiry: '', cvc: '', usage_count: 0 },
+            proxy: proxyList.length ? substituteProxySession(proxyList[Math.floor(Math.random() * proxyList.length)]) : ''
+        };
     });
 }
 
@@ -1385,6 +1461,45 @@ async function getPoolEmailCredentials(id) {
         clientId: row.client_id || '',
         refreshToken: row.refresh_token || '',
         registered: Number(row.registered || 0) === 1
+    };
+}
+
+function buildPoolEmailRegisteredUpdate(id, registered) {
+    const numericId = Number(id);
+    if (!Number.isFinite(numericId) || numericId <= 0) {
+        throw new Error('邮箱记录 ID 无效');
+    }
+
+    const nextRegistered = Boolean(registered);
+    const sql = nextRegistered
+        ? `UPDATE pool_emails
+           SET registered = 1,
+               registered_at = COALESCE(registered_at, CURRENT_TIMESTAMP),
+               in_use = 0,
+               locked_at = NULL,
+               locked_by = NULL
+           WHERE id = ?`
+        : `UPDATE pool_emails
+           SET registered = 0,
+               registered_at = NULL,
+               in_use = 0,
+               locked_at = NULL,
+               locked_by = NULL
+           WHERE id = ?`;
+
+    return {
+        sql,
+        params: [numericId],
+        registered: nextRegistered
+    };
+}
+
+async function setPoolEmailRegistered(id, registered) {
+    const plan = buildPoolEmailRegisteredUpdate(id, registered);
+    const result = await runExecute(plan.sql, plan.params);
+    return {
+        updated: Number(result?.affectedRows || 0),
+        registered: plan.registered
     };
 }
 
@@ -2039,15 +2154,18 @@ module.exports = {
     deleteCardAssetById,
     markCardAssetActivated,
     markCardAssetRegistered,
+    insertRegisteredCardAsset,
     markCardAssetExchangeFailed,
     bulkImportPoolEmails,
     listPoolEmails,
     getPoolEmailCredentials,
+    setPoolEmailRegistered,
     deletePoolEmail,
     reservePoolEmail,
     releasePoolEmailReservation,
     markPoolEmailRegistered,
     getRuntimeAssets,
+    reserveRuntimePhoneAssets,
     reserveRuntimeAssets,
     reserveUnregisteredCardAsset,
     releaseRuntimeAssets,
@@ -2092,6 +2210,7 @@ module.exports = {
         normalizeCardPool,
         normalizeCardStatus,
         buildCardPickWhereClause,
-        buildCardAssetTargetWhere
+        buildCardAssetTargetWhere,
+        buildPoolEmailRegisteredUpdate
     }
 };

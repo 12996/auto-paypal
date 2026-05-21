@@ -1,31 +1,36 @@
 # 兑换接口调用说明
 
-本文档说明 `index.html` 中已经提取出的兑换请求函数需要传入什么参数、返回什么结果，以及前端如何接收。
+本文档说明 `get_card_message.js` 的真实请求、缓存记录、字段兼容和入库格式化规则。
 
 ## 1. 固定接口地址
 
-源码位置：`index.html:371`
+源码位置：`get_card_message.js`
 
 ```js
-const API_BASE = 'https://cards.779.chat/api/exchange';
+const API_BASE = 'https://www.meiguodizhi.com/api/v1/dz';
 ```
 
-实际兑换验证接口：
+实际请求接口：
 
 ```text
-POST https://cards.779.chat/api/exchange/verify
+POST https://www.meiguodizhi.com/api/v1/dz
 ```
 
 ## 2. 底层请求函数：verifyExchangeKey
 
-源码位置：`index.html:606`
+源码位置：`get_card_message.js`
 
 ```js
 async function verifyExchangeKey(key) {
-  return fetch(`${API_BASE}/verify`, {
+  void key;
+  return fetch(API_BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: key })
+    body: JSON.stringify({
+      city: '',
+      path: '/usa-address/california',
+      method: 'refresh'
+    })
   });
 }
 ```
@@ -34,15 +39,17 @@ async function verifyExchangeKey(key) {
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `key` | `string` | 是 | 用户输入的卡密，一个函数调用只处理一个卡密。 |
+| `key` | `string` | 否 | 本地记录名/资产标识。新接口不接收该字段；CLI 不传时会自动生成 `meiguodizhi-时间戳` 作为缓存文件名。 |
 
 ### 请求体
 
-函数会把 `key` 组装成 JSON 请求体：
+函数会发送固定 JSON 请求体：
 
 ```json
 {
-  "key": "用户输入的卡密"
+  "city": "",
+  "path": "/usa-address/california",
+  "method": "refresh"
 }
 ```
 
@@ -66,7 +73,9 @@ const data = await resp.json();
 console.log('接口返回数据：', data);
 ```
 
-## 3. 推荐使用的封装函数：processSingleKey
+## 3. 历史前端封装函数：processSingleKey
+
+> 当前运行时主要使用 `get_card_message.js` 的 `getCardMessage()`；本节只保留旧前端批量兑换页面的接收方式说明。
 
 源码位置：`index.html:618`
 
@@ -123,47 +132,158 @@ try {
 }
 ```
 
-## 4. 后端成功返回数据结构（基于前端使用方式推断，未实测）
+## 4. 后端成功返回数据结构
 
-注意：下面不是已实测确认的后端接口文档，而是根据当前页面代码推断出的“前端期望结构”。要确认真实返回，需要拿有效卡密实际请求接口，或查看后端接口文档/后端源码。
-
-根据当前页面代码，成功返回的 `cardData` 会被当成类似下面的结构使用：
+新接口成功返回的数据主体在 `address` 字段。`get_card_message.js` 会保留原始 `address`，并额外补一份兼容旧调用链的 `content` 字段，避免下游 `formatCardForDatabase()`、缓存读取和资产写回接口变化。
 
 ```js
 {
-  card: {
-    category: '类别',
-    status: 'used',
-    activated_at: '激活时间',
-    expires_at: '到期时间'
+  status: 'ok',
+  address: {
+    Address: '2979  Marietta Street',
+    Telephone: '510-520-2238',
+    City: 'Oakland',
+    Zip_Code: '94612',
+    State: 'CA',
+    Expires: '12/2028',
+    Credit_Card_Number: '4916248669944514',
+    CVV2: '223',
+    Full_Name: 'Suntech Mailer'
   },
   content: {
-    card_number: '卡号',
-    expiry_date: '有效期',
-    cvv: 'CVV',
-    phone: '电话',
-    name: '姓名',
-    address: '地址',
-    sms_api: '接码 API 地址'
+    card_number: '4916248669944514',
+    expiry_date: '12/2028',
+    cvv: '223',
+    phone: '510-520-2238',
+    name: 'Suntech Mailer',
+    address: '2979  Marietta Street,Oakland CA 94612,US',
+    sms_api: ''
   }
 }
 ```
 
 说明：
 
-- `card.status` 当前页面识别：`used`、`new`、`expired`。
-- `content.sms_api` 如果存在，会用于后续获取短信验证码。
-- 如果接口返回里有 `error` 字段，前端会认为兑换失败。这个判断来自 `index.html:647`：
+- `address` 为新接口原始数据。
+- `content` 为本项目兼容层生成的数据，不改变现有下游读取方式。
+- 新接口没有 `sms_api`，所以兼容字段里固定为空字符串。
+
+## 5. 兼容转换代码位置
+
+兼容转换都在 `get_card_message.js` 内完成，运行时不需要下游直接适配新接口的 `address.*`。
+
+### 5.1 转换入口
+
+源码位置：
+
+```text
+get_card_message.js:257 buildCardRecordFromResponse()
+```
+
+关键逻辑：
+
+```js
+const json = normalizeCardResponseJson(parseJsonMaybe(rawText));
+```
+
+含义：
+
+1. 先把接口原始响应文本解析为 JSON。
+2. 如果响应是新接口结构 `{ address: {...}, status: 'ok' }`，调用兼容转换。
+3. 保存缓存时同时保留：
+   - `json.address`：新接口原始字段。
+   - `json.content`：兼容旧接口的字段。
+
+### 5.2 新接口转旧字段
+
+源码位置：
+
+```text
+get_card_message.js:163 mapMeiguodizhiAddressToLegacyContent()
+get_card_message.js:175 normalizeCardResponseJson()
+```
+
+字段映射：
+
+| 新接口字段 | 兼容后的旧字段 | 用途 |
+| --- | --- | --- |
+| `address.Credit_Card_Number` | `content.card_number` | 卡号 |
+| `address.Expires` | `content.expiry_date` | 有效期，后续归一化为 `MMYY` |
+| `address.CVV2` | `content.cvv` | CVC |
+| `address.Full_Name` | `content.name` | 账单姓名 |
+| `address.Telephone` | `content.phone` | 电话 |
+| `address.Address` + `City` + `State` + `Zip_Code` | `content.address` | 账单地址字符串 |
+| 无 | `content.sms_api = ''` | 新接口没有短信接口，固定为空 |
+
+兼容后的地址格式示例：
+
+```text
+2979  Marietta Street,Oakland CA 94612,US
+```
+
+这个格式继续交给原有的 `splitBillingAddress()` 拆成：
 
 ```js
 {
-  error: '错误原因'
+  street: '2979  Marietta Street',
+  city: 'Oakland',
+  state: 'CA',
+  zip: '94612',
+  country: 'US'
 }
 ```
 
-但后端是否一定按这个格式返回错误，需要实测或后端文档确认。
+### 5.3 下游读取兼容
 
-## 5. HTTP 错误码处理
+源码位置：
+
+```text
+get_card_message.js:186 getRecordContent()
+get_card_message.js:239 formatCardForDatabase()
+```
+
+`getRecordContent()` 同时支持四种输入：
+
+```text
+content
+address
+json.content
+json.address
+```
+
+因此以下数据都能被 `formatCardForDatabase()` 正常转换：
+
+```js
+formatCardForDatabase({ content: {...旧接口字段} })
+formatCardForDatabase({ address: {...新接口字段} })
+formatCardForDatabase({ json: { content: {...旧接口字段} } })
+formatCardForDatabase({ json: { address: {...新接口字段} } })
+```
+
+### 5.4 返回信息是否相同
+
+外部接口原始返回不相同：
+
+- 旧接口主要提供 `content.*`。
+- 新接口主要提供 `address.*`。
+
+项目内部缓存和下游消费保持兼容：
+
+- 新接口原始数据保存在 `json.address`。
+- 兼容旧调用链的数据保存在 `json.content`。
+- `formatCardForDatabase()` 输出的数据库字段名不变。
+
+因此，正常新接口返回包含 `Credit_Card_Number`、`Expires`、`CVV2` 时，运行时资产注册不会因为返回结构变化而报错。
+
+仍可能失败的情况：
+
+- 新接口没返回 `address`。
+- 新接口缺少 `Credit_Card_Number`、`Expires` 或 `CVV2`。
+- HTTP 请求失败或返回非 JSON。
+
+这些情况会在 `card_asset_registrar.js` 中被判定为兑换异常，写入 `remark`，并禁用该条卡资产，避免后续反复使用坏数据。
+
+## 6. HTTP 错误码处理
 
 当前页面对以下状态码做了中文提示。这个映射是前端逻辑，能从源码确认；但后端实际会返回哪些状态码，需要实测确认：
 
@@ -176,7 +296,7 @@ try {
 | `500` | 服务内部异常，请稍后重试 |
 | 其他 | `请求失败 (状态码)` |
 
-## 6. 短信验证码请求函数：fetchSms
+## 7. 短信验证码请求函数：fetchSms
 
 源码位置：`index.html:584`
 
@@ -213,7 +333,7 @@ yes|123456
 - `yes` 表示获取成功。
 - `123456` 是验证码内容。
 
-## 7. 批量兑换如何接收结果
+## 8. 批量兑换如何接收结果
 
 当前页面批量处理逻辑是逐个调用 `processSingleKey(key)`：
 
@@ -236,7 +356,7 @@ for (let i = 0; i < keys.length; i++) {
 4. 每个卡密调用一次 `processSingleKey(key)`。
 5. 返回结果交给 `addResult(...)` 渲染到页面。
 
-## 8. 数据库字段格式化函数：formatCardForDatabase
+## 9. 数据库字段格式化函数：formatCardForDatabase
 
 `get_card_message.js` 里提供了 `formatCardForDatabase(recordOrJson)`，用于把缓存记录或接口 JSON 整理成入库字段。
 
@@ -272,16 +392,16 @@ console.log(dbData);
 
 | 输出字段 | 来源 |
 | --- | --- |
-| `CARD_NUMBER` | `content.card_number` |
-| `CARD_EXPIRY` | `content.expiry_date`，归一化为 `MMYY`，例如 `2030/4` -> `0430` |
-| `CARD_CVC` | `content.cvv` |
-| `BILLING_COUNTRY` | 从 `content.address` 最后一段解析 |
-| `BILLING_ADDRESS` | 从 `content.address` 第一段解析 |
-| `BILLING_CITY` | 从 `content.address` 中间段解析 |
+| `CARD_NUMBER` | 优先 `content.card_number`；新接口兼容 `address.Credit_Card_Number` |
+| `CARD_EXPIRY` | 优先 `content.expiry_date`；新接口兼容 `address.Expires`，归一化为 `MMYY`，例如 `12/2028` -> `1228` |
+| `CARD_CVC` | 优先 `content.cvv`；新接口兼容 `address.CVV2` |
+| `BILLING_COUNTRY` | 从兼容地址最后一段解析，新接口固定生成 `US` |
+| `BILLING_ADDRESS` | 从兼容地址第一段解析，新接口来自 `address.Address` |
+| `BILLING_CITY` | 从兼容地址中间段解析，新接口来自 `address.City` |
 | `BILLING_STATE` | 优先根据归一化后的 ZIP 前 3 位范围映射；查不到时才使用地址里显式出现的州缩写 |
-| `BILLING_ZIP` | 从 `content.address` 中间段最后一个 token 解析；超过 5 位取前 5 位，不足 5 位前面补 `0` |
-| `BILLING_NAME` | `content.name` |
-| `card_sms` | `content.sms_api` |
+| `BILLING_ZIP` | 从兼容地址中间段最后一个 token 解析；新接口来自 `address.Zip_Code` |
+| `BILLING_NAME` | 优先 `content.name`；新接口兼容 `address.Full_Name` |
+| `card_sms` | `content.sms_api`；新接口没有该字段时为空字符串 |
 
 ### ZIP 和州字段规则
 
@@ -315,37 +435,29 @@ console.log(dbData);
 
 如果 ZIP 无法识别，函数不会抛错，会返回空字符串字段，方便后续入库流程继续处理并做异常记录。
 
-## 9. 当前项目运行时接入方式
+## 10. 当前项目运行时接入方式
 
 当前项目已通过 `card_asset_registrar.js` 接入该兑换函数。
 
 ### 接入位置
 
-运行时资产获取阶段会先尝试使用已有已注册未激活卡：
+运行时资产获取阶段只从数据库抢占手机号和代理：
 
 ```js
-store.reserveRuntimeAssets(ownerKey)
+store.reserveRuntimePhoneAssets(ownerKey)
 ```
 
-如果没有可用卡，但已经抢到手机号，则从 `card_assets` 里预留一条未注册卡密：
-
-```text
-is_active = 1
-is_registered = 0
-is_activated = 0
-card_key <> ''
-```
-
-然后调用：
+只要已经抢到手机号，就直接调用新接口获取银行卡，不再查询或复用 `card_assets` 里的旧银行卡：
 
 ```js
-getCardMessage(cardKey, { live: true })
+getCardMessage('', { live: true })
 formatCardForDatabase(record)
 ```
 
-兑换成功后写回 `card_assets`：
+`getCardMessage()` 会自动生成 `meiguodizhi-时间戳` 作为本地缓存记录名。兑换成功后，系统会新增一条已注册银行卡记录到 `card_assets`，并立即锁给当前任务使用：
 
 ```text
+card_key = meiguodizhi-时间戳 或接口记录名
 is_registered = 1
 card_number / card_expiry / card_cvc
 billing_country / billing_address / billing_city / billing_state / billing_zip / billing_name
@@ -353,21 +465,14 @@ card_sms
 redeemed_at = CURRENT_TIMESTAMP
 remark = ''
 status = '正常'
+in_use = 1
 ```
 
-当前任务会直接使用刚兑换出来的这张卡，不会先释放回池子再重新抢。
+当前任务会直接使用刚获取出来的这张卡，不会先释放回池子再重新抢。新流程不需要管理员导入卡密，也不会为了拿卡而查询数据库旧卡。
 
 ### 失败处理
 
-如果兑换接口失败、返回结构异常，或缺少 `CARD_NUMBER` / `CARD_EXPIRY` / `CARD_CVC`，系统会：
-
-```text
-is_active = 0
-status = '兑换异常'
-remark = '兑换异常：具体错误摘要'
-```
-
-然后释放该卡密锁，避免后续任务反复重试同一张坏卡。
+如果直接请求接口失败、返回结构异常，或缺少 `CARD_NUMBER` / `CARD_EXPIRY` / `CARD_CVC`，本次尝试不会插入可用卡记录；系统会继续按最大尝试次数重试，最终仍无可用卡时按资产不足处理。
 
 ### 下游传递
 
@@ -387,4 +492,4 @@ BILLING_NAME
 
 ### 测试说明
 
-自动测试使用 mock `getCardMessage()`，不会请求真实兑换接口，也不会消耗真实卡密。
+自动测试使用 mock `getCardMessage()`，不会请求真实银行卡接口。

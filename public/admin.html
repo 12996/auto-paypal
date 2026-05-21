@@ -403,7 +403,7 @@
         }
 
         #cards .data-table {
-            min-width: 2720px;
+            min-width: 2490px;
         }
 
         .readonly-cell {
@@ -416,10 +416,6 @@
 
         .readonly-cell.empty {
             color: transparent;
-        }
-
-        .card-key-input {
-            min-width: 220px;
         }
 
         .table-footer {
@@ -2070,37 +2066,11 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
         <div id="cards" class="page-view">
             <div class="page-header">
                 <h1>银行卡池管理</h1>
-                <p>管理支付结算所用的银行卡资源</p>
+                <p>系统会在运行时直接请求接口获取银行卡信息；这里仅展示已获取的银行卡记录和状态。</p>
             </div>
             <div class="panel">
                 <div class="panel-header">
                     <h2 class="panel-title">银行卡池列表</h2>
-                    <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                        <button class="btn btn-success" onclick="toggleImportBox('card_pool')">
-                            <i data-lucide="upload"></i>
-                            批量导入
-                        </button>
-                        <button class="btn btn-success" onclick="addAssetRow('card_pool')">
-                            <i data-lucide="plus"></i>
-                            添加新卡片
-                        </button>
-                    </div>
-                </div>
-                <div id="card_import_box" class="import-box">
-                    <div class="import-box-header">
-                    <div class="import-box-title">批量导入银行卡密</div>
-                </div>
-                <div class="import-box-tip">
-                    每行一条卡密。例如：`4859-F868-EMFMYMYY-B03E`。未兑换前，后续 CARD / BILLING 字段保持空白。
-                </div>
-                <textarea id="card_import_text" class="import-textarea"
-                    placeholder="4859-F868-EMFMYMYY-B03E&#10;4859-F868-EMFMYMYY-B03F"></textarea>
-                    <div class="import-actions">
-                        <button class="btn btn-success" onclick="importAssets('card_pool')">
-                            <i data-lucide="check-check"></i>
-                            解析并导入
-                        </button>
-                    </div>
                 </div>
                 <div class="batch-actions">
                     <div class="filter-dropdown" data-filter="card_pool">
@@ -2129,7 +2099,6 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                         <thead>
                             <tr>
                                 <th class="select-header">选择</th>
-                                <th width="230px">卡密</th>
                                 <th width="100px" style="text-align:center">是否注册</th>
                                 <th width="210px">CARD_NUMBER</th>
                                 <th width="130px">CARD_EXPIRY</th>
@@ -2156,7 +2125,7 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                 <button class="btn btn-primary" style="margin-top:32px; width: 100%; justify-content: center;"
                     onclick="saveAllConfigs()">
                     <i data-lucide="refresh-cw"></i>
-                    同步银行卡池到数据库
+                    同步银行卡状态到数据库
                 </button>
             </div>
         </div>
@@ -2234,7 +2203,7 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                         <tbody id="pool_mail_preview_body"></tbody>
                     </table>
                 </div>
-                <p style="font-size: 13px; color: var(--text-dim); margin-top: 12px;">列表按服务端 INTERNALDATE / 信封日期从新到旧排序；垃圾箱需在「系统配置」中勾选包含 Junk。</p>
+                <p style="font-size: 13px; color: var(--text-dim); margin-top: 12px;">只显示最近 5 封邮件，列表按服务端 INTERNALDATE / 信封日期从新到旧排序；垃圾箱需在「系统配置」中勾选包含 Junk。</p>
             </div>
         </div>
 
@@ -3236,9 +3205,11 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
 
             tbody.innerHTML = poolEmailsList.map((row) => {
                 const id = Number(row.id);
-                const regBadge = row.registered
-                    ? '<span class="status-badge status-success">已注册</span>'
-                    : '<span class="status-badge status-running">未注册</span>';
+                const regSelect = `
+                    <select class="asset-input" style="min-width:96px; padding:8px 10px;" onchange="handlePoolEmailRegisteredChange(${id}, this.value)">
+                        <option value="0" ${row.registered ? '' : 'selected'}>未注册</option>
+                        <option value="1" ${row.registered ? 'selected' : ''}>已注册</option>
+                    </select>`;
                 const lockBadge = row.in_use
                     ? '<span class="status-badge" style="background:rgba(245,158,11,0.15);color:#f59e0b;">占用中</span>'
                     : '<span class="status-badge" style="opacity:.78;">空闲</span>';
@@ -3258,7 +3229,7 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                 <tr>
                     <td><code>${safeEmail}</code></td>
                     <td style="text-align:center">${pwdCell}</td>
-                    <td style="text-align:center">${regBadge}</td>
+                    <td style="text-align:center">${regSelect}</td>
                     <td style="text-align:center">${lockBadge}</td>
                     <td>${escapeHtml(regAt)}</td>
                     <td style="text-align:center">
@@ -3272,6 +3243,26 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                 </tr>`;
             }).join('');
             lucide.createIcons();
+        }
+
+        async function handlePoolEmailRegisteredChange(id, value) {
+            try {
+                const registered = String(value) === '1';
+                const res = await authFetch(`/api/admin/pool-emails/${id}/registered`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ registered })
+                });
+                const data = await res.json();
+                if (!res.ok || data.success === false) {
+                    throw new Error(data.message || '更新邮箱注册状态失败');
+                }
+                showMessage(data.message || '邮箱注册状态已更新', 'success');
+                await loadPoolEmails(false);
+            } catch (error) {
+                showMessage(error.message || '更新邮箱注册状态失败', 'error');
+                await loadPoolEmails(false).catch(() => { });
+            }
         }
 
         async function loadPoolEmails(showToast = false) {
@@ -3347,7 +3338,7 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
             }
             tbody.innerHTML = '<tr><td colspan="4">加载中...</td></tr>';
             try {
-                const res = await authFetch(`/api/admin/pool-emails/${id}/messages?limit=50`);
+                const res = await authFetch(`/api/admin/pool-emails/${id}/messages?limit=5`);
                 const data = await res.json();
                 if (!res.ok || data.success === false) {
                     throw new Error(data.message || '加载失败');
@@ -3852,10 +3843,10 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
         async function batchDeleteCards() {
             const keys = Array.from(selectedItems.card_pool);
             if (keys.length === 0) {
-                showMessage('请选择要删除的卡密', 'warning');
+                showMessage('请选择要删除的银行卡', 'warning');
                 return;
             }
-            const ok = await showAdminConfirm(`确定删除选中的 ${keys.length} 个卡密 ?`, '删除卡密');
+            const ok = await showAdminConfirm(`确定删除选中的 ${keys.length} 张银行卡 ?`, '删除银行卡');
             if (!ok) {
                 return;
             }
@@ -4111,7 +4102,6 @@ http://USER-session-{session}:PASS@your-proxy.example.com:1000"></textarea>
                 return `
                 <tr>
                     <td class="select-cell"><input type="checkbox" ${selectedItems.card_pool.has(key) ? 'checked' : ''} onchange="toggleSelection('card_pool', '${key}', this.checked)"></td>
-                    <td><input type="text" class="asset-input card-key-input" value="${escapeHtml(item.card_key || '')}" onchange="cardPool[${actualIndex}].card_key=this.value.trim()" placeholder="4859-F868-EMFMYMYY-B03E"></td>
                     <td style="text-align:center"><input type="checkbox" ${Number(item.is_registered || 0) === 1 ? 'checked' : ''} onchange="handleCardRegisteredChange(${actualIndex}, this.checked)"></td>
                     <td>${renderReadonlyCell(item.number)}</td>
                     <td>${renderReadonlyCell(formatCardExpiryForDisplay(item.expiry), item.expiry)}</td>

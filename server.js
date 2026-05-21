@@ -18,7 +18,7 @@ const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const ADMIN_REFRESH_AFTER_MS = 60 * 60 * 1000;
 const PROCESS_IDLE_TIMEOUT_MS = 60 * 1000;
-const MAX_PROCESS_ATTEMPTS = 10;
+const MAX_PROCESS_ATTEMPTS = 1;
 const WS_HEARTBEAT_PING_TYPE = 'ping';
 const WS_HEARTBEAT_PONG_TYPE = 'pong';
 const ADMIN_TOKEN_SECRET = process.env.ADMIN_TOKEN_SECRET || crypto
@@ -614,6 +614,10 @@ async function sendTaskSnapshot(ws, jobKey) {
         cardLast4: task.card_last4 || null,
         isTerminal: TERMINAL_TASK_STATUSES.has(task.status)
     }));
+}
+
+function getPoolEmailMessageLimit() {
+    return 5;
 }
 
 function logTask(jobKey, message, level = 'log') {
@@ -1540,6 +1544,24 @@ app.post('/api/admin/pool-emails/import', authenticateAdmin, async (req, res) =>
     }
 });
 
+app.patch('/api/admin/pool-emails/:id/registered', authenticateAdmin, async (req, res) => {
+    try {
+        await ensureStoreReady();
+        const registered = Boolean(req.body?.registered);
+        const result = await store.setPoolEmailRegistered(Number(req.params.id), registered);
+        if (!result.updated) {
+            return res.status(404).json({ success: false, message: '邮箱记录不存在' });
+        }
+        res.json({
+            success: true,
+            registered: result.registered,
+            message: result.registered ? '邮箱已标记为已注册' : '邮箱已标记为未注册'
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.delete('/api/admin/pool-emails/:id', authenticateAdmin, async (req, res) => {
     try {
         await ensureStoreReady();
@@ -1569,7 +1591,7 @@ app.get('/api/admin/pool-emails/:id/messages', authenticateAdmin, async (req, re
             refreshToken: row.refreshToken,
             host: String(host || 'outlook.office365.com').trim() || 'outlook.office365.com',
             includeJunk,
-            limit: Math.min(80, Math.max(5, Number(req.query.limit) || 40))
+            limit: getPoolEmailMessageLimit()
         });
         res.json({ success: true, messages });
     } catch (error) {
@@ -2867,6 +2889,7 @@ if (process.env.IS_PRODUCT_FLOW === 'true') {
 module.exports = {
     __test: {
         analyzeProcessOutput,
-        settleRunProcessAssets
+        settleRunProcessAssets,
+        getPoolEmailMessageLimit
     }
 };

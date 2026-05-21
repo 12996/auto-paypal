@@ -80,6 +80,21 @@
 | `pool-email-imap.js` | Outlook IMAP / XOAUTH2 邮箱池 |
 | `imap-auth.js` | 自有 IMAP 服务的鉴权 token 缓存 |
 
+**邮箱管理后台链路**：
+
+- `public/admin.html` 的「邮箱管理」页面负责导入邮箱、查看邮箱列表、手动修改邮箱注册状态和预览邮件。
+- `server.js` 提供邮箱管理 API：
+  - `GET /api/admin/pool-emails`：返回邮箱池列表。
+  - `POST /api/admin/pool-emails/import`：批量导入 `mail.txt`。
+  - `PATCH /api/admin/pool-emails/:id/registered`：后台手动修改邮箱注册状态。
+  - `GET /api/admin/pool-emails/:id/messages`：预览邮件；服务端固定只返回最近 5 封。
+  - `DELETE /api/admin/pool-emails/:id`：删除邮箱记录。
+- `mysql-store.js` 封装邮箱池数据：
+  - `reservePoolEmail()` 只会取 `is_active=1 AND registered=0` 的邮箱。
+  - `markPoolEmailRegistered()` 在注册成功后自动标记邮箱已注册。
+  - `setPoolEmailRegistered()` 供后台手动切换 `registered` 状态；改为未注册会清空 `registered_at` 并释放占用锁。
+- `pool-email-imap.js` 的 `listRecentEmailsForAdmin()` 负责后台邮件预览，默认返回最近 5 封。
+
 ### 8. OpenAI API 客户端 (chatgpt.js)
 **做什么**：封装 OpenAI checkout/order API，创建订单并返回 Stripe 支付链接。  
 **为什么值得作为入口**：理解"0 元订单"是如何创建的。
@@ -97,6 +112,12 @@
 | `public/admin.html` | 后台单页面 SPA |
 | `public/admin-login.html` | 后台登录页 |
 | `public/index.html` | 用户侧 CDK 兑换页 |
+
+**银行卡后台链路**：
+
+- `public/admin.html` 的「银行卡池」页面不再导入或编辑卡密，只展示运行时已获取的银行卡记录、注册/激活状态、备注和报废状态。
+- 运行时通过 `card_asset_registrar.js` 只预留手机号和代理；银行卡每次都直接调用 `get_card_message.js` 请求 `https://www.meiguodizhi.com/api/v1/dz` 获取新信息，不再从 `card_assets` 里挑旧卡。
+- 新获取的卡通过 `mysql-store.js` 的 `insertRegisteredCardAsset()` 写入 `card_assets`，并保持 `in_use=1` 锁给当前任务，后续成功激活或银行卡被拒仍走现有 `markCardAssetActivated()` / `deleteCardAsset()` 结算链路。
 
 ## 推荐阅读顺序
 

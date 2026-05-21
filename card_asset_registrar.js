@@ -44,6 +44,21 @@ function formatExchangeError(error) {
     return `兑换异常：${message}`.slice(0, 2000);
 }
 
+function getExchangeRecord(recordOrResult) {
+    return recordOrResult?.record || recordOrResult;
+}
+
+function getGeneratedCardKey(record, dbData) {
+    const candidates = [
+        record?.key,
+        record?.card_key,
+        record?.json?.key,
+        dbData?.card_key,
+        dbData?.CARD_NUMBER ? `meiguodizhi-${dbData.CARD_NUMBER}` : ''
+    ];
+    return String(candidates.find(Boolean) || `meiguodizhi-${Date.now()}`).trim().slice(0, 64);
+}
+
 async function exchangeOneCard({
     ownerKey,
     storeApi,
@@ -61,7 +76,7 @@ async function exchangeOneCard({
             live: true,
             recordsDir
         });
-        const record = result?.record || result;
+        const record = getExchangeRecord(result);
         const dbData = formatCard(record);
         const missing = validateCardDatabaseData(dbData);
         if (missing.length) {
@@ -84,20 +99,60 @@ async function exchangeOneCard({
     }
 }
 
+async function exchangeDirectCard({
+    ownerKey,
+    storeApi,
+    requestCard,
+    formatCard,
+    recordsDir
+}) {
+    try {
+        const result = await requestCard('', {
+            live: true,
+            recordsDir
+        });
+        const record = getExchangeRecord(result);
+        const dbData = formatCard(record);
+        const missing = validateCardDatabaseData(dbData);
+        if (missing.length) {
+            throw new Error(`接口结果缺少字段: ${missing.join(', ')}`);
+        }
+
+        const cardKey = getGeneratedCardKey(record, dbData);
+        const cardAssetId = await storeApi.insertRegisteredCardAsset({
+            ...dbData,
+            card_key: cardKey,
+            remark: ''
+        }, {
+            ownerKey
+        });
+
+        return {
+            cardAssetId,
+            card: buildRuntimeCard(cardKey, dbData)
+        };
+    } catch (error) {
+        return { failed: true, error };
+    }
+}
+
 async function ensureRuntimeAssets(options = {}) {
     const ownerKey = String(options.ownerKey || '');
     const storeApi = options.store || store;
     const requestCard = options.getCardMessage || getCardMessage;
     const formatCard = options.formatCardForDatabase || formatCardForDatabase;
     const maxExchangeAttempts = Math.max(1, Number(options.maxExchangeAttempts || DEFAULT_MAX_EXCHANGE_ATTEMPTS));
+    if (typeof storeApi.reserveRuntimePhoneAssets !== 'function') {
+        throw new Error('storeApi.reserveRuntimePhoneAssets is required');
+    }
 
-    const assets = await storeApi.reserveRuntimeAssets(ownerKey);
-    if (!hasUsablePhone(assets) || hasReadyCard(assets)) {
+    const assets = await storeApi.reserveRuntimePhoneAssets(ownerKey);
+    if (!hasUsablePhone(assets)) {
         return assets;
     }
 
     for (let attempt = 1; attempt <= maxExchangeAttempts; attempt += 1) {
-        const exchanged = await exchangeOneCard({
+        const directExchanged = await exchangeDirectCard({
             ownerKey: `${ownerKey}:card:${attempt}`,
             storeApi,
             requestCard,
@@ -105,14 +160,11 @@ async function ensureRuntimeAssets(options = {}) {
             recordsDir: options.recordsDir
         });
 
-        if (!exchanged) {
-            return assets;
-        }
-        if (exchanged.cardAssetId && exchanged.card) {
+        if (directExchanged.cardAssetId && directExchanged.card) {
             return {
                 ...assets,
-                cardAssetId: exchanged.cardAssetId,
-                card: exchanged.card
+                cardAssetId: directExchanged.cardAssetId,
+                card: directExchanged.card
             };
         }
     }
@@ -126,6 +178,7 @@ module.exports = {
         hasUsablePhone,
         hasReadyCard,
         validateCardDatabaseData,
-        formatExchangeError
+        formatExchangeError,
+        getGeneratedCardKey
     }
 };

@@ -49,8 +49,8 @@ server.js app.post('/api/run-process')
   -> reserveForegroundSlot()
   -> 后台异步任务
        -> cardAssetRegistrar.ensureRuntimeAssets()
-            -> store.reserveRuntimeAssets()
-            -> 如没有已注册可用卡，调用 get_card_message.js 兑换未注册 card_key
+            -> store.reserveRuntimePhoneAssets()
+            -> get_card_message.js 直接请求新银行卡接口
        -> runCheckoutScript()
             -> spawn('node', [index.js])
             -> index.js run()
@@ -146,7 +146,7 @@ IP 冷却检查：
 每次尝试的主流程：
 
 1. 广播“第 N 次尝试”和当前进度：`server.js:2261-2270`
-2. 在 5 分钟内循环通过 `cardAssetRegistrar.ensureRuntimeAssets()` 抢占运行时资产；若只有手机号但没有已注册可用卡，会尝试兑换未注册卡密：`server.js:2332-2356`、`card_asset_registrar.js:87-121`
+2. 在 5 分钟内循环通过 `cardAssetRegistrar.ensureRuntimeAssets()` 抢占运行时资产；流程只从数据库抢手机号和代理，每次都直接请求银行卡接口获取新卡并写入 `card_assets`：`server.js:2332-2356`、`card_asset_registrar.js`
 3. 组装子进程环境变量，包含 CARD 与 BILLING 字段：`server.js:2368-2383`
 4. 调用 `runCheckoutScript()` 启动 `index.js`：`server.js:2391-2413`
 5. 分析输出、更新任务日志、广播进度：`server.js:2414-2443`
@@ -159,21 +159,18 @@ IP 冷却检查：
 资产由 `cardAssetRegistrar.ensureRuntimeAssets(ownerKey)` 返回：
 
 - 手机号：`phone_assets`
-- 银行卡：`card_assets`；优先使用已注册未激活卡，没有可用卡时可兑换未注册卡密
+- 银行卡：不从数据库挑选旧卡；每次有可用手机号后直接请求银行卡接口生成新卡，再写入 `card_assets`
 - 代理：`app_config.proxy`
 
 关键证据：
 
-- 银行卡可选条件：`is_active = 1 AND is_registered = 1 AND is_activated = 0 AND card_number/card_expiry/card_cvc` 均不为空：`mysql-store.js:108-110`
-- 未注册卡密兑换条件：`is_active = 1 AND is_registered = 0 AND is_activated = 0 AND card_key <> ''`：`mysql-store.js:1078-1086`
 - 单行资产抢占使用事务和 `FOR UPDATE SKIP LOCKED`，并写入 `in_use=1`、`locked_at`、`locked_by`：`mysql-store.js:1044-1076`
-- `reserveRuntimeAssets()` 同时抢手机号、已注册银行卡并随机选一个代理：`mysql-store.js:1100-1155`
-- `card_asset_registrar.js` 在有手机号但无可用已注册卡时，最多尝试 3 张未注册卡密：`card_asset_registrar.js:99-118`
-- 兑换成功后通过 `markCardAssetRegistered()` 写入卡号、有效期、CVC、账单地址、短信信息和 `redeemed_at`：`mysql-store.js:985-1023`
-- 兑换失败后通过 `markCardAssetExchangeFailed()` 写入 `status='兑换异常'` 和 `remark`：`mysql-store.js:1025-1042`
+- `reserveRuntimePhoneAssets()` 只抢手机号并读取代理，不查询 `card_assets` 旧卡。
+- `card_asset_registrar.js` 在有手机号时最多尝试 3 次直接请求新银行卡接口。
+- 直接获取成功后通过 `insertRegisteredCardAsset()` 新增一条已注册卡，写入卡号、有效期、CVC、账单地址、短信信息和 `redeemed_at`，并保持 `in_use=1` 锁给当前任务。
 - 释放资产时清空 `in_use/locked_at/locked_by`：`mysql-store.js:1157-1178`
 
-如果 5 分钟内没有抢到同时可用的手机号和银行卡，任务会被归类为维护状态：
+如果 5 分钟内没有抢到可用手机号，或连续请求新银行卡接口仍没有拿到可用 CARD 字段，任务会被归类为维护状态：
 
 - `ASSET_POOL_EXHAUSTED`：`server.js:2358-2365`
 
@@ -216,11 +213,11 @@ BILLING_NAME    = 账单姓名
 
 `ChatGPTService` 实际调用 ChatGPT checkout API：
 
-- 固定通过 `http://127.0.0.1:7891` 代理创建 Playwright APIRequestContext：`chatgpt.js:4`、`chatgpt.js:99-101`
-- 先请求 `https://chatgpt.com` 建立上下文，再 POST `https://chatgpt.com/backend-api/payments/checkout`：`chatgpt.js:3`、`chatgpt.js:104-119`
+- 固定通过 `http://127.0.0.1:7891` 代理创建 Playwright APIRequestContext：`chatgpt.js:4`、`chatgpt.js:127-129`
+- 先请求 `https://chatgpt.com` 建立上下文，再 POST `https://chatgpt.com/backend-api/payments/checkout`：`chatgpt.js:3`、`chatgpt.js:131-145`
 - 请求体使用 Plus + PayPal hosted checkout payload：`chatgpt.js:8-25`
-- 响应中按 `url` / `stripe_hosted_url` / `checkout_url` 提取支付长链接：`chatgpt.js:169`
-- 最多重试 3 次：`chatgpt.js:72`、`chatgpt.js:89`
+- 响应中优先按 `url` / `stripe_hosted_url` / `checkout_url` 提取支付长链接；如果只返回 `checkout_session_id` 等 `cs_live` / `cs_test` session id，则拼接成 `https://pay.openai.com/c/pay/{session_id}`：`chatgpt.js:63-81`、`chatgpt.js:201`
+- 最多重试 3 次：`chatgpt.js:102`、`chatgpt.js:121`
 
 ### 8.2 Stripe/PayPal 自动化
 
@@ -292,9 +289,9 @@ BILLING_NAME    = 账单姓名
 | `cdk_codes` | `fail_count`、`cooldown_until` 控制无资格冷却 | `recordCdkFailure()` / `resetCdkFailure()` |
 | `activation_attempt_limits` | 按 IP 记录连续失败与冷却 | `getActivationAttemptLimit()` / `recordActivationAttemptFailure()` |
 | `task_logs` | `job_key`、`status`、`message`、`progress`、`raw_output` | `createTaskLog()` / `updateTaskLog()` |
-| `phone_assets` | `in_use`、`locked_at`、`locked_by` 抢占锁；`is_active/status` 由管理员维护 | `reserveRuntimeAssets()` / `releaseRuntimeAssets()` |
-| `card_assets` | 卡密、兑换状态、卡详情、备注、抢占锁、激活状态、禁用状态、成功次数 | `reserveRuntimeAssets()` / `reserveUnregisteredCardAsset()` / `markCardAssetRegistered()` / `markCardAssetExchangeFailed()` / `markCardAssetActivated()` / `deleteCardAsset()` |
-| `app_config` | `proxy` 运行时代理池 | `reserveRuntimeAssets()` |
+| `phone_assets` | `in_use`、`locked_at`、`locked_by` 抢占锁；`is_active/status` 由管理员维护 | `reserveRuntimePhoneAssets()` / `releaseRuntimeAssets()` |
+| `card_assets` | 记录每次接口获取的新卡、抢占锁、激活状态、禁用状态、成功次数；不再作为运行时选卡来源 | `insertRegisteredCardAsset()` / `markCardAssetActivated()` / `deleteCardAsset()` |
+| `app_config` | `proxy` 运行时代理池 | `reserveRuntimePhoneAssets()` |
 
 ## 12. 与成品号流程的边界
 

@@ -1,5 +1,171 @@
 # Work Log
 
+## 2026-05-21 - 银行卡每次直接请求接口
+
+目标：运行时不再从数据库查询/复用银行卡，每次任务拿到手机号后都直接请求新银行卡接口。
+
+已完成：
+
+- `mysql-store.js`
+  - 新增 `reserveRuntimePhoneAssets()`：只抢占 `phone_assets` 并读取代理，不查询 `card_assets`。
+- `card_asset_registrar.js`
+  - `ensureRuntimeAssets()` 改为优先调用 `reserveRuntimePhoneAssets()`。
+  - 只要有可用手机号，就调用 `getCardMessage('', { live: true })` 获取新卡。
+  - 移除运行时旧卡复用路径；旧 `card_assets` 不再作为选卡来源。
+- `test/test_card_asset_direct_exchange.js`
+  - 增加断言：运行时不应调用 `reserveRuntimeAssets()` 查询 `card_assets`。
+- 文档：
+  - 更新 `docs/project/get_card_message.md`、`docs/project/run-process-api-flow.md`、`docs/project/00-project-map.md`。
+
+验证：
+
+- 新增断言先失败：`should not query card_assets before requesting a new card`。
+- `node .\test\test_card_asset_direct_exchange.js`：通过。
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+- `node .\test\test_run_process_asset_settlement.js`：通过。
+- `node .\test\test_get_card_message_format.js`：通过。
+- `node .\test\test_card_admin_no_key_static.js`：通过。
+- `node .\test\test_product_activator_analysis.js`：通过。
+- `node --check .\card_asset_registrar.js`：通过。
+- `node --check .\mysql-store.js`：通过。
+- `git diff --check`（本次相关文件）：通过。
+
+## 2026-05-21 - product_activator 输出分析测试
+
+目标：为 `product_activator.js` 增加一个不启动浏览器、不请求外部服务的轻量测试文件。
+
+已完成：
+
+- 新增 `test/test_product_activator_analysis.js`
+  - 覆盖 `analyzeProcessOutput()` 对成功、无权限、代理维护、银行卡拒绝等输出的分类。
+  - 验证 PayPal 步骤前后的“银行卡被拒绝”处理差异：到达 PayPal 后才标记 `deleteCard=true`。
+
+验证：
+
+- `node .\test\test_product_activator_analysis.js`：通过。
+- `node --check .\test\test_product_activator_analysis.js`：通过。
+
+## 2026-05-21 - 银行卡改为运行时直接获取
+
+目标：新银行卡接口不需要卡密，后台银行卡页去掉卡密导入/编辑入口，运行时直接请求接口获取银行卡信息。
+
+已完成：
+
+- `card_asset_registrar.js`
+  - 无可用已注册卡但已抢到手机号时，优先直接调用 `getCardMessage('', { live: true })`。
+  - 将接口结果格式化为 CARD/BILLING 字段后，调用 `insertRegisteredCardAsset()` 新增已注册卡，并锁给当前任务使用。
+  - 保留历史未注册卡密兑换逻辑作为兼容兜底。
+- `mysql-store.js`
+  - 新增 `insertRegisteredCardAsset()`，写入新获取的银行卡详情，并设置 `is_registered=1`、`in_use=1`、`status='正常'`。
+- `public/admin.html`
+  - 银行卡页去掉卡密批量导入、添加新卡片和可编辑卡密列。
+  - 页面说明改为运行时直接请求接口获取银行卡信息；保留状态查看、注册/激活状态和报废操作。
+- 测试：
+  - 新增 `test/test_card_asset_direct_exchange.js`。
+  - 新增 `test/test_card_admin_no_key_static.js`。
+- 文档：
+  - 更新 `docs/project/get_card_message.md`、`docs/project/run-process-api-flow.md`、`docs/project/00-project-map.md`。
+
+验证：
+
+- 已先运行新增测试并确认失败：
+  - `test_card_asset_direct_exchange.js`：当前实现没有直接请求银行卡接口。
+  - `test_card_admin_no_key_static.js`：后台仍显示卡密导入/编辑入口。
+- `node .\test\test_card_asset_direct_exchange.js`：通过。
+- `node .\test\test_card_admin_no_key_static.js`：通过。
+- `node .\test\test_get_card_message_format.js`：通过。
+- `node .\test\test_run_process_asset_settlement.js`：通过。
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+- `node .\test\test_pool_email_admin.js`：通过。
+- `node .\test\test_pool_email_admin_html_static.js`：通过。
+- `node --check .\card_asset_registrar.js`：通过。
+- `node --check .\mysql-store.js`：通过。
+- `node --check .\get_card_message.js`：通过。
+- `git diff --check`（本次相关文件）：通过。
+
+## 2026-05-21 - 邮箱管理支持手动注册状态与邮件预览限制
+
+目标：后台「邮箱管理」可以手动修改邮箱注册状态；邮件预览只返回最近 5 封。
+
+已完成：
+
+- `mysql-store.js`
+  - 新增 `setPoolEmailRegistered()`。
+  - 新增注册状态更新 SQL 构造 helper：已注册时保留既有 `registered_at` 或写当前时间；未注册时清空 `registered_at`。
+  - 手动切换状态时同时释放 `in_use/locked_at/locked_by`，避免状态改完仍被锁住。
+- `server.js`
+  - 新增 `PATCH /api/admin/pool-emails/:id/registered`。
+  - 邮件预览接口 `GET /api/admin/pool-emails/:id/messages` 固定传 `limit=5`。
+- `public/admin.html`
+  - 邮箱列表「注册状态」改为下拉框，可切换 `未注册` / `已注册`。
+  - 邮件预览请求改为 `?limit=5`，页面提示只显示最近 5 封。
+- `pool-email-imap.js`
+  - `listRecentEmailsForAdmin()` 默认 `limit` 改为 5。
+- 测试：
+  - 新增 `test/test_pool_email_admin.js`。
+  - 新增 `test/test_pool_email_admin_html_static.js`。
+- `docs/project/00-project-map.md`
+  - 补充邮箱管理后台链路、状态修改 API 和邮件预览 5 封限制。
+
+验证：
+
+- 已先运行新增测试并确认失败：
+  - `test_pool_email_admin.js` 缺少邮箱注册状态更新 helper。
+  - `test_pool_email_admin_html_static.js` 缺少后台状态修改 UI 和 `limit=5`。
+- `node .\test\test_pool_email_admin.js`：通过。
+- `node .\test\test_pool_email_admin_html_static.js`：通过。
+- `node --check .\mysql-store.js`：通过。
+- `node --check .\server.js`：通过。
+- `node --check .\pool-email-imap.js`：通过。
+
+## 2026-05-21 - get_card_message 切换到 meiguodizhi 地址接口
+
+目标：把 `get_card_message.js` 的真实请求从旧卡密兑换接口切换为 `https://www.meiguodizhi.com/api/v1/dz`，并在不改变下游返回读取方式的前提下适配新响应结构。
+
+已完成：
+
+- `get_card_message.js`
+  - `API_BASE` 改为 `https://www.meiguodizhi.com/api/v1/dz`。
+  - `verifyExchangeKey()` 改为 POST 固定 payload：`{"city":"","path":"/usa-address/california","method":"refresh"}`。
+  - CLI 测试不再强制传 `key`；不传时自动生成 `meiguodizhi-时间戳` 本地记录名。
+  - 旧请求源码按要求保留在 `get_from_779` 注释块中。
+  - 新接口 `address.*` 响应会映射成旧 `content.*` 兼容字段，保留原始 `address`，下游 `formatCardForDatabase()` 输出字段不变。
+- `test/test_get_card_message_format.js`
+  - 增加新接口地址响应到数据库字段的映射测试。
+  - 增加 `getCardMessage()` mock 新接口响应后仍生成 `json.content` 的兼容测试。
+- `docs/project/get_card_message.md`
+  - 同步记录新接口、请求体和新旧字段映射规则。
+
+验证：
+
+- `node --check .\get_card_message.js`：通过。
+- `node --check .\test\test_get_card_message_format.js`：通过。
+- `node .\test\test_get_card_message_format.js`：通过。
+- `node .\test\test_run_process_asset_settlement.js`：通过。
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+
+## 2026-05-19 - chatgpt.js 支持 checkout session id 拼接支付链接
+
+目标：修正 ChatGPT checkout API 不直接返回完整支付链接、只返回 checkout session id 时，`chatgpt.js` 无法返回可打开支付链接的问题。
+
+已完成：
+
+- `chatgpt.js`
+  - 新增 `buildPayUrlFromCheckoutData()`，保留 `url` / `stripe_hosted_url` / `checkout_url` 直接返回兼容。
+  - 新增 `checkout_session_id` / `checkoutSessionId` / `session_id` / `sessionId` / `id` 兼容；当值为 `cs_live_` 或 `cs_test_` 开头时，拼接为 `https://pay.openai.com/c/pay/{session_id}`。
+  - 如响应里带 `url_fragment` / `checkout_url_fragment` / `fragment` / `hash`，会追加为 URL hash。
+- `test/test_chatgpt_create_order.js`
+  - 回归测试改为 mock 只返回 `checkout_session_id`，验证 `_createOrder()` 返回完整 `pay.openai.com` 支付链接。
+- `docs/project/run-process-api-flow.md`
+  - 同步记录 checkout session id 拼接规则。
+
+验证：
+
+- 新测试先失败：旧逻辑只查找 `url` / `stripe_hosted_url` / `checkout_url`，返回 `null`。
+- `node .\test\test_chatgpt_create_order.js`：通过。
+- `node -c .\chatgpt.js`：通过。
+- `node -c .\test\test_chatgpt_create_order.js`：通过。
+
 ## 2026-05-16 - 手机号池状态改为管理员手动控制
 
 目标：手机号不会因为一次激活/短信异常被自动作废；手机号是否作废由管理员在后台手机号池手动指定。

@@ -10,14 +10,14 @@ const cardAssetRegistrar = require('./card_asset_registrar');
 
 const CONFIG = {
     MAX_ACCOUNT_RETRIES: 15,
-    MAX_ACT_RETRIES_PER_ACCOUNT: 10,
+    MAX_ACT_RETRIES_PER_ACCOUNT: 1,
     MAX_PROTOCOL_RETRIES: 2,
     MAX_TOPUP_FAILURES_BEFORE_STOP: 3,
     RETRY_DELAY_MS: 5000,
     CHILD_IDLE_TIMEOUT_MS: 60 * 1000
 };
 
-const IMAP_ADMIN_EMAIL_API = 'https://imap.chiyiyi.cloud/api/admin/emails';
+const IMAP_ADMIN_EMAIL_API = '';
 const OAUTH_ADD_PHONE_ERROR = '当前账号触发手机号验证';
 
 // 进程级 inbox 域名黑名单：被 API 拒绝过的域名，本进程内不再传给子进程

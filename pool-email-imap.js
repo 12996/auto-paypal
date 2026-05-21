@@ -240,7 +240,7 @@ async function listRecentEmailsForAdmin({
     refreshToken,
     host,
     includeJunk,
-    limit = 50
+    limit = 5
 }) {
     const client = await connectOutlookImap({ email, password, clientId, refreshToken, host });
 

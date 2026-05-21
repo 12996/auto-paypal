@@ -1,7 +1,12 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const API_BASE = 'https://card.52bankcard.com/api/exchange';
+const API_BASE = 'https://www.meiguodizhi.com/api/v1/dz';
+const MEIGUODIZHI_ADDRESS_PAYLOAD = {
+  city: '',
+  path: '/usa-address/california',
+  method: 'refresh'
+};
 const DEFAULT_RECORDS_DIR = path.join(__dirname, 'card_records');
 
 function sanitizeRecordName(key) {
@@ -17,11 +22,29 @@ function cleanSmsApi(value) {
   return String(value || '').trim().replace(/^`|`$/g, '').trim();
 }
 
+function makeDefaultRecordKey() {
+  return `meiguodizhi-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+}
+
+/*
+get_from_779:
+const API_BASE = 'https://card.52bankcard.com/api/exchange';
+
 async function verifyExchangeKey(key) {
   return fetch(`${API_BASE}/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key: key })
+  });
+}
+*/
+
+async function verifyExchangeKey(key) {
+  void key;
+  return fetch(API_BASE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(MEIGUODIZHI_ADDRESS_PAYLOAD)
   });
 }
 
@@ -127,10 +150,47 @@ function splitBillingAddress(address) {
   };
 }
 
+function formatMeiguodizhiBillingAddress(address) {
+  const street = String(address && address.Address || '').trim();
+  const city = String(address && address.City || '').trim();
+  const state = String(address && address.State || '').trim();
+  const zip = normalizeUsZip(address && address.Zip_Code);
+  const cityStateZip = [city, state, zip].filter(Boolean).join(' ');
+
+  return [street, cityStateZip, 'US'].filter(Boolean).join(',');
+}
+
+function mapMeiguodizhiAddressToLegacyContent(address) {
+  return {
+    card_number: String(address && address.Credit_Card_Number || '').trim(),
+    expiry_date: String(address && address.Expires || '').trim(),
+    cvv: String(address && address.CVV2 || '').trim(),
+    phone: String(address && address.Telephone || '').trim(),
+    name: String(address && address.Full_Name || '').trim(),
+    address: formatMeiguodizhiBillingAddress(address),
+    sms_api: ''
+  };
+}
+
+function normalizeCardResponseJson(json) {
+  if (json && json.address && !json.content) {
+    return {
+      ...json,
+      content: mapMeiguodizhiAddressToLegacyContent(json.address)
+    };
+  }
+
+  return json;
+}
+
 function getRecordContent(recordOrJson) {
   if (!recordOrJson) return {};
   if (recordOrJson.content) return recordOrJson.content;
+  if (recordOrJson.address) return mapMeiguodizhiAddressToLegacyContent(recordOrJson.address);
   if (recordOrJson.json && recordOrJson.json.content) return recordOrJson.json.content;
+  if (recordOrJson.json && recordOrJson.json.address) {
+    return mapMeiguodizhiAddressToLegacyContent(recordOrJson.json.address);
+  }
   return {};
 }
 
@@ -196,8 +256,9 @@ function formatCardForDatabase(recordOrJson) {
 
 async function buildCardRecordFromResponse(key, resp) {
   const rawText = await resp.text();
-  const json = parseJsonMaybe(rawText);
-  const smsApi = json && json.content ? cleanSmsApi(json.content.sms_api) : '';
+  const json = normalizeCardResponseJson(parseJsonMaybe(rawText));
+  const content = getRecordContent(json);
+  const smsApi = cleanSmsApi(content.sms_api);
 
   const record = {
     key,
@@ -214,14 +275,14 @@ async function buildCardRecordFromResponse(key, resp) {
 }
 
 async function getCardMessage(key, options = {}) {
-  if (!key) throw new Error('key is required');
+  const recordKey = key || makeDefaultRecordKey();
 
   const recordsDir = options.recordsDir || DEFAULT_RECORDS_DIR;
   const live = Boolean(options.live);
   const force = Boolean(options.force);
   const requestCard = options.requestCard || verifyExchangeKey;
-  const recordPath = getRecordPath(recordsDir, key);
-  const existing = await readCardRecord(recordsDir, key);
+  const recordPath = getRecordPath(recordsDir, recordKey);
+  const existing = await readCardRecord(recordsDir, recordKey);
 
   if (existing && !(live && force)) {
     return { source: 'cache', record: existing, path: recordPath };
@@ -231,13 +292,13 @@ async function getCardMessage(key, options = {}) {
     return {
       source: 'missing-cache',
       path: recordPath,
-      message: '本地没有该卡密记录。为避免扣费，未请求真实接口。确认要请求时请加 --live。'
+      message: '本地没有该记录。未请求真实接口。确认要请求时请加 --live。'
     };
   }
 
-  const resp = await requestCard(key);
-  const record = await buildCardRecordFromResponse(key, resp);
-  const savedPath = await saveCardRecord(recordsDir, key, record);
+  const resp = await requestCard(recordKey);
+  const record = await buildCardRecordFromResponse(recordKey, resp);
+  const savedPath = await saveCardRecord(recordsDir, recordKey, record);
 
   return { source: 'live', record, path: savedPath };
 }
@@ -250,7 +311,7 @@ async function requestSmsForSavedCard(key, options = {}) {
   if (!record) {
     return {
       source: 'missing-cache',
-      message: '本地没有该卡密记录，无法读取 sms_api。'
+      message: '本地没有该记录，无法读取 sms_api。'
     };
   }
 
@@ -294,25 +355,23 @@ function parseArgs(argv) {
     else if (!parsed.key) parsed.key = arg;
   }
 
+  if (!parsed.key) parsed.key = makeDefaultRecordKey();
+
   return parsed;
 }
 
 function printUsage() {
-  console.log('用法: node get_card_message.js <卡密> [--live] [--force] [--sms] [--records-dir=目录]');
+  console.log('用法: node get_card_message.js [本地记录名] [--live] [--force] [--sms] [--records-dir=目录]');
   console.log('');
-  console.log('默认只读取本地缓存，不请求扣费接口。');
-  console.log('--live        缓存不存在时请求真实卡密接口并保存结果');
+  console.log('新接口请求体不需要 key；可选的本地记录名只用于缓存文件命名。');
+  console.log('默认只读取本地缓存，不请求真实接口。');
+  console.log('--live        缓存不存在时请求真实接口并保存结果');
   console.log('--force       与 --live 同用时允许覆盖已有缓存');
   console.log('--sms         使用缓存里的 sms_api 实时请求短信接口');
 }
 
 async function main(argv = process.argv) {
   const args = parseArgs(argv);
-
-  if (!args.key) {
-    printUsage();
-    return 1;
-  }
 
   const result = await getCardMessage(args.key, args);
   console.log(JSON.stringify(result, null, 2));
@@ -340,6 +399,7 @@ module.exports = {
   sanitizeRecordName,
   getRecordPath,
   cleanSmsApi,
+  makeDefaultRecordKey,
   normalizeUsZip,
   stateFromZip,
   splitBillingAddress,
