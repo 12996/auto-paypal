@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { getImapAuthHeaders } = require('./imap-auth');
 const inboxEmail = require('./inbox-email');
+const { fetchLatestOpenAiOtpOnce } = require('./pool-email-imap');
 const CaliforniaFingerprint = require('./lib/california-fingerprint');
 
 // 使用 stealth 插件
@@ -196,6 +197,39 @@ async function getLatestCode(email, maxRetries = 30, excludeCode = '', options =
             onNoNewCodeFor30Seconds: options.onNoNewCodeFor30Seconds || null,
             onBeforePoll: options.onBeforePoll || null
         });
+    }
+
+    if (emailSource === 'pool') {
+        const password = String(process.env.POOL_EMAIL_PASSWORD || '');
+        const clientId = String(process.env.POOL_EMAIL_CLIENT_ID || '');
+        const refreshToken = String(process.env.POOL_EMAIL_REFRESH_TOKEN || '');
+        const host = String(process.env.POOL_EMAIL_IMAP_HOST || 'outlook.office365.com').trim() || 'outlook.office365.com';
+        const includeJunk = String(process.env.POOL_EMAIL_INCLUDE_JUNK || '1') !== '0';
+        if (!password && !(clientId && refreshToken)) {
+            throw new Error('邮箱池模式缺少密码或 OAuth2 凭证，无法获取 OAuth 验证码');
+        }
+        console.log(`📨 [邮箱池] 正在通过 ${host} 为 ${normalizedEmail} 获取 OAuth 验证码...`);
+        for (let i = 0; i < maxRetries; i += 1) {
+            const code = await fetchLatestOpenAiOtpOnce({
+                email: normalizedEmail,
+                password,
+                clientId,
+                refreshToken,
+                host,
+                includeJunk,
+                excludeCode
+            });
+            if (code) {
+                console.log(`📨 [邮箱池] 成功获取验证码: ${code}`);
+                return code;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
+        throw new Error('邮箱池获取 OAuth 验证码超时');
+    }
+
+    if (emailSource !== 'random' || !process.env.IMAP_ADMIN_PASSWORD) {
+        throw new Error('远程 IMAP 管理 API 未启用：仅 EMAIL_SOURCE=random 且配置 IMAP_ADMIN_PASSWORD 时可用');
     }
 
     console.log(`📨 [IMAP] 正在为 ${normalizedEmail} 获取验证码...`);

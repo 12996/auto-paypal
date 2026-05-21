@@ -2,9 +2,10 @@
  * 本地代理桥接模块
  * 解决两个问题：
  * 1. Playwright 不支持 SOCKS5 认证
- * 2. 本机需要先走 VPN 才能连接远程代理
+ * 2. 可选通过本地 VPN 再连接远程代理
  *
- * 链路: 浏览器 → 本地代理(:10808) → VPN(:7897) → 远程SOCKS5 → 目标网站
+ * 默认链路: 浏览器 → 本地代理(:10808) → 远程SOCKS5 → 目标网站
+ * VPN 链路: 浏览器 → 本地代理(:10808) → VPN(:7897) → 远程SOCKS5 → 目标网站
  */
 
 const net = require('net');
@@ -184,7 +185,7 @@ function connectViaHttpProxy(httpProxyHost, httpProxyPort, targetHost, targetPor
  * @param {string} options.remoteProxy - 远程代理 URL (socks5://user:pass@host:port)
  * @param {number} options.localPort - 本地监听端口 (默认 10808)
  * @param {number} options.vpnPort - 本地 VPN 端口 (默认 7897)
- * @param {boolean} options.useVpn - 是否通过 VPN 连接 (默认 true)
+ * @param {boolean} options.useVpn - 是否通过 VPN 连接 (默认 false)
  * @param {string} options.vpnType - VPN 代理类型: 'http' 或 'socks5' (默认 'http')
  */
 function createProxyBridge(options = {}) {
@@ -193,7 +194,7 @@ function createProxyBridge(options = {}) {
             remoteProxy,
             localPort = DEFAULT_LOCAL_PORT,
             vpnPort = DEFAULT_VPN_PORT,
-            useVpn = true,
+            useVpn = false,
             vpnType = 'http'  // Clash 默认是 HTTP 代理
         } = options;
 

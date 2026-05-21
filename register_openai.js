@@ -1037,7 +1037,7 @@ async function runRegistrationFlow() {
     const poolImapHost = String(process.env.POOL_EMAIL_IMAP_HOST || 'outlook.office365.com').trim() || 'outlook.office365.com';
     const poolIncludeJunk = String(process.env.POOL_EMAIL_INCLUDE_JUNK || '1') !== '0';
 
-    const emailSource = String(process.env.EMAIL_SOURCE || 'random').toLowerCase();
+    const emailSource = String(process.env.EMAIL_SOURCE || 'pool').toLowerCase();
     const inboxApiBase = String(process.env.INBOX_API_BASE || 'https://temp-email-api.jzqkwl.com').trim().replace(/\/+$/, '');
     const inboxEmailDomain = String(process.env.INBOX_EMAIL_DOMAIN || '').trim().replace(/^@/, '');
     // 多域名候选：每次随机挑一个，避免单一域名被风控/限频
@@ -1113,6 +1113,9 @@ async function runRegistrationFlow() {
             : `（@${usedDomain}）`;
         console.log(`📨 [Inbox] 临时邮箱已创建: ${email} ${domainHint}`);
     } else {
+        if (emailSource !== 'random' || !process.env.IMAP_ADMIN_PASSWORD) {
+            throw new Error('邮箱池模式未拿到可用邮箱凭证，且远程 random 邮箱未启用；不会回退到源码默认服务器');
+        }
         const randomDomain = getRandomEmailDomain();
         email = normalizeCloudEmail(`${generateRandomString(15).toLowerCase()}@${randomDomain}`);
         console.log(`🎲 [随机邮箱] 本次使用 ${email}`);
@@ -1143,14 +1146,15 @@ async function runRegistrationFlow() {
             launchOptions.channel = CHROMIUM_CHANNEL; // 'chrome' / 'msedge'
         }
 
-        // 通过本地代理桥接连接远程代理（需先走 VPN）
+        // 通过本地代理桥接连接远程代理；服务器默认不走本机 7897。
         if (proxyValue) {
+            const useProxyBridgeVpn = String(process.env.PROXY_BRIDGE_USE_VPN || '').trim() === '1';
             try {
                 const bridge = await createProxyBridge({
                     remoteProxy: proxyValue,
                     localPort: 10808,
                     vpnPort: 7897,
-                    useVpn: true,
+                    useVpn: useProxyBridgeVpn,
                     vpnType: 'http'
                 });
                 proxyBridgeStarted = true;
@@ -1738,7 +1742,13 @@ async function runRegistrationFlow() {
             accessToken: sessionData.accessToken,
             emailSource,
             inboxJwt: inboxJwt || '',
-            inboxApiBase: useInbox ? inboxApiBase : ''
+            inboxApiBase: useInbox ? inboxApiBase : '',
+            poolEmail: usePoolImap ? rawPoolEmail : '',
+            poolPassword: usePoolImap ? poolImapPass : '',
+            poolClientId: usePoolImap ? poolClientId : '',
+            poolRefreshToken: usePoolImap ? poolRefreshToken : '',
+            poolImapHost: usePoolImap ? poolImapHost : '',
+            poolIncludeJunk
         };
     } catch (e) {
         const isUserExists = String(e?.message || '').includes(USER_ALREADY_EXISTS_ERROR)

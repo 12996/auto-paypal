@@ -11,7 +11,7 @@ const store = require('./mysql-store');
 const cardAssetRegistrar = require('./card_asset_registrar');
 const { listRecentEmailsForAdmin, fetchAccessDeactivatedEmails } = require('./pool-email-imap');
 const runtimeLog = require('./runtime-log');
-const { initializeImap, getImapAuthHeaders } = require('./imap-auth-microsoft');
+const { initializeImap } = require('./imap-auth-microsoft');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -1429,7 +1429,7 @@ app.post('/api/admin/products/generate-stop', authenticateAdmin, async (req, res
     }
 });
 
-/** 代理批量测试：通过 local-proxy-bridge 走 VPN 链路，确保测试和业务使用相同路径 */
+/** 代理批量测试：通过 local-proxy-bridge 测试，默认直连远程代理。 */
 app.post('/api/admin/proxy/test', authenticateAdmin, async (req, res) => {
     try {
         const { createProxyBridge, closeProxyBridge } = require('./local-proxy-bridge');
@@ -1458,13 +1458,14 @@ app.post('/api/admin/proxy/test', authenticateAdmin, async (req, res) => {
             const proxyUrl = subst(raw);
             const t0 = Date.now();
             const localPort = 10900 + index;
+            const useProxyBridgeVpn = String(process.env.PROXY_BRIDGE_USE_VPN || '').trim() === '1';
             let bridge = null;
             try {
                 bridge = await createProxyBridge({
                     remoteProxy: proxyUrl,
                     localPort,
                     vpnPort: 7897,
-                    useVpn: true,
+                    useVpn: useProxyBridgeVpn,
                     vpnType: 'http'
                 });
             } catch (e) {
@@ -2803,10 +2804,21 @@ async function start() {
         }
     }, 60 * 1000).unref();
 
-    try {
-        await initializeImap();
-    } catch (error) {
-        console.error(`[IMAP] 项目启动预刷新失败: ${error.message}`);
+    const shouldInitializeRemoteImap = Boolean(
+        process.env.IMAP_ADMIN_PASSWORD
+        || (
+            process.env.MICROSOFT_IMAP_EMAIL
+            && process.env.MICROSOFT_IMAP_PASSWORD
+            && process.env.MICROSOFT_IMAP_CLIENT_ID
+            && process.env.MICROSOFT_IMAP_REFRESH_TOKEN
+        )
+    );
+    if (shouldInitializeRemoteImap) {
+        try {
+            await initializeImap();
+        } catch (error) {
+            console.error(`[IMAP] 项目启动预刷新失败: ${error.message}`);
+        }
     }
 
     const server = app.listen(PORT, () => {

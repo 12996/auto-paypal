@@ -114,12 +114,15 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function generateImapKey(email) {
+async function generateImapKey(email, emailSourceOverride = '') {
     // 如果使用邮箱池模式（本地 Microsoft IMAP），跳过远程 IMAP 服务
-    const emailSource = String(process.env.EMAIL_SOURCE || 'random').toLowerCase();
+    const emailSource = String(emailSourceOverride || process.env.EMAIL_SOURCE || '').toLowerCase();
     if (emailSource === 'pool') {
         console.log('[IMAP] 邮箱池模式，跳过远程 IMAP Key 生成');
         return '';
+    }
+    if (emailSource !== 'random' || !process.env.IMAP_ADMIN_PASSWORD) {
+        throw new Error('远程 IMAP Key 生成未启用：仅 EMAIL_SOURCE=random 且配置 IMAP_ADMIN_PASSWORD 时可用');
     }
 
     const normalizedEmail = String(email || '').trim();
@@ -706,12 +709,12 @@ async function runRegistrationProcess(onProgress, runtimeJobKey = '') {
     let poolSlot = null;
     const ownerKey = `reg:${String(runtimeJobKey || '').trim() || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`}`;
 
-    let emailSource = 'random';
+    let emailSource = 'pool';
     try {
         emailSource = String(await store.getAppConfigValue('email_source', '')).toLowerCase();
         if (!['random', 'pool', 'inbox'].includes(emailSource)) {
             const legacy = String(await store.getAppConfigValue('pool_email_enabled', '0')) === '1';
-            emailSource = legacy ? 'pool' : 'random';
+            emailSource = legacy ? 'pool' : 'pool';
         }
     } catch (_) { /* 用默认 */ }
 
@@ -720,7 +723,7 @@ async function runRegistrationProcess(onProgress, runtimeJobKey = '') {
             poolSlot = await store.reservePoolEmail(ownerKey);
         }
     } catch (err) {
-        console.warn(`[Registration] 邮箱池预留失败，回退随机邮箱: ${err.message}`);
+        throw new Error(`邮箱池预留失败：${err.message}`);
     }
 
     const childEnv = { ...process.env };
@@ -733,10 +736,11 @@ async function runRegistrationProcess(onProgress, runtimeJobKey = '') {
     // 邮箱来源标记
     childEnv.EMAIL_SOURCE = emailSource;
 
-    // 自定义随机邮箱域名（注册流程不论是否走 pool 都把它带上，方便子进程后续兼容）
-    const randomDomainCfg = String(await store.getAppConfigValue('random_email_domain', 'chiyiyi.cloud'))
-        .trim().replace(/^@/, '').toLowerCase() || 'chiyiyi.cloud';
-    childEnv.RANDOM_EMAIL_DOMAIN = randomDomainCfg;
+    if (emailSource === 'random') {
+        const randomDomainCfg = String(await store.getAppConfigValue('random_email_domain', 'chiyiyi.cloud'))
+            .trim().replace(/^@/, '').toLowerCase() || 'chiyiyi.cloud';
+        childEnv.RANDOM_EMAIL_DOMAIN = randomDomainCfg;
+    }
 
     // Inbox 临时邮箱配置（仅 inbox 模式下生效，提前注入避免子进程再查 DB）
     if (emailSource === 'inbox') {
@@ -773,6 +777,9 @@ async function runRegistrationProcess(onProgress, runtimeJobKey = '') {
         // 命中了一行但没有任何可用凭证：把它释放，避免占着茅坑
         await store.releasePoolEmailReservation(poolSlot.id).catch(() => { });
         poolSlot = null;
+        throw new Error('邮箱池预留失败：预留邮箱缺少密码或 OAuth2 凭证');
+    } else if (emailSource === 'pool') {
+        throw new Error('邮箱池预留失败：没有可用邮箱，请在后台邮箱池补充未注册且可用的邮箱');
     }
 
     try {
@@ -831,9 +838,17 @@ async function runProtocolProcess(email, onProgress, runtimeJobKey = '', inboxBu
         RANDOM_EMAIL_DOMAIN: randomDomainCfg,
         FINGERPRINT_CONFIG: JSON.stringify(fingerprintConfig)
     };
-    // 把注册阶段的邮箱后端凭证透传给 oauth_login，让它用同一个 API 拿 OAuth 验证码
+    // 把注册阶段的邮箱后端凭证透传给 oauth_login，让它用同一个邮箱池拿 OAuth 验证码
     if (inboxBundle.emailSource) {
         protocolEnv.EMAIL_SOURCE = inboxBundle.emailSource;
+    }
+    if (inboxBundle.poolEmail) {
+        protocolEnv.POOL_EMAIL = inboxBundle.poolEmail;
+        protocolEnv.POOL_EMAIL_PASSWORD = inboxBundle.poolPassword || '';
+        protocolEnv.POOL_EMAIL_CLIENT_ID = inboxBundle.poolClientId || '';
+        protocolEnv.POOL_EMAIL_REFRESH_TOKEN = inboxBundle.poolRefreshToken || '';
+        protocolEnv.POOL_EMAIL_IMAP_HOST = inboxBundle.poolImapHost || 'outlook.office365.com';
+        protocolEnv.POOL_EMAIL_INCLUDE_JUNK = inboxBundle.poolIncludeJunk ? '1' : '0';
     }
     if (inboxBundle.inboxJwt) {
         protocolEnv.INBOX_JWT = inboxBundle.inboxJwt;
@@ -959,7 +974,13 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
             const inboxBundle = {
                 emailSource: regResult.emailSource || '',
                 inboxJwt: regResult.inboxJwt || '',
-                inboxApiBase: regResult.inboxApiBase || ''
+                inboxApiBase: regResult.inboxApiBase || '',
+                poolEmail: regResult.poolEmail || '',
+                poolPassword: regResult.poolPassword || '',
+                poolClientId: regResult.poolClientId || '',
+                poolRefreshToken: regResult.poolRefreshToken || '',
+                poolImapHost: regResult.poolImapHost || '',
+                poolIncludeJunk: regResult.poolIncludeJunk !== false
             };
 
             let activationAttempt = 0;
@@ -1122,7 +1143,7 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
                         cardExpiry
                     });
 
-                    const imapKey = await generateImapKey(email);
+                    const imapKey = await generateImapKey(email, regResult.emailSource || '');
                     // 协议成功 → 升级 status='正常'，补 file_path 和 imap_key
                     const finalFilePath = oauthResult.sub2apiPath || oauthResult.sub2apiFile || oauthResult.filePath || '';
                     await store.markProductReadyByEmail(email, finalFilePath, imapKey);

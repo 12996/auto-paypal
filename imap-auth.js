@@ -28,6 +28,11 @@ function scheduleRefresh() {
 }
 
 async function refreshImapToken(force = false) {
+    const emailSource = String(process.env.EMAIL_SOURCE || 'random').toLowerCase();
+    if (emailSource !== 'random' || !IMAP_PASSWORD) {
+        throw new Error('远程 IMAP 管理 API 未启用：仅 EMAIL_SOURCE=random 且配置 IMAP_ADMIN_PASSWORD 时可用');
+    }
+
     if (!force && cachedToken) {
         return cachedToken;
     }
@@ -94,9 +99,9 @@ async function initializeImapAuth() {
     return forceRefreshImapToken();
 }
 
-// 仅在非邮箱池模式下自动初始化远程 IMAP 认证
+// 仅在明确配置远程 IMAP 管理密码时自动初始化；否则避免启动时请求默认旧域名。
 const emailSource = String(process.env.EMAIL_SOURCE || 'random').toLowerCase();
-if (emailSource !== 'pool') {
+if (emailSource !== 'pool' && IMAP_PASSWORD) {
     initializeImapAuth().catch((error) => {
         console.error(`❌ [IMAP] 启动预刷新失败: ${error.message}`);
     });

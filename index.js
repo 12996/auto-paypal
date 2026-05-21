@@ -308,7 +308,7 @@ async function run(options = {}) {
     if (DEBUG_HEADFUL) {
         console.log(`🧪 [Step 0] 启动 Stealth 浏览器环境... (HEADFUL=1，有头模式${CHROMIUM_CHANNEL ? `, channel=${CHROMIUM_CHANNEL}` : ''})`);
     }
-    // 代理配置：直接走本地 VPN
+    // 代理配置：默认直连远程代理；只有显式开启时才经本地 VPN 端口中转。
     let proxyBridgeStarted = false;
     if (CONFIG.proxy) {
         // 如果配置的是本地 VPN 端口，直接使用，不需要桥接
@@ -317,13 +317,13 @@ async function run(options = {}) {
             launchOptions.proxy = { server: 'http://127.0.0.1:7897' };
             console.log(`🌐 [系统] 直接使用本地 VPN 代理: http://127.0.0.1:7897`);
         } else {
-            // 远程代理需要通过桥接（先走 VPN 再连远程）
+            const useProxyBridgeVpn = String(process.env.PROXY_BRIDGE_USE_VPN || '').trim() === '1';
             try {
                 const bridge = await createProxyBridge({
                     remoteProxy: CONFIG.proxy,
                     localPort: 10808,
                     vpnPort: 7897,
-                    useVpn: true,
+                    useVpn: useProxyBridgeVpn,
                     vpnType: 'http'
                 });
                 proxyBridgeStarted = true;

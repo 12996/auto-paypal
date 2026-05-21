@@ -120,6 +120,7 @@ DB_NAME=plus_papay
 | `CHROMIUM_CHANNEL` | 使用本机浏览器 channel | 可选 `chrome` / `msedge` |
 | `CHATGPT_TOKEN` / `STRIPE_KEY` | 调试或单独跑支付流程时使用 | 正常生产流程多由注册阶段动态传入 |
 | `PROXY` | 子进程浏览器流程代理 | 生产建议通过后台代理配置维护 |
+| `PROXY_BRIDGE_USE_VPN` | ProxyBridge 是否先走本机 VPN 端口 `7897` | 服务器部署通常留空；本地需要 Clash/VPN 中转时设为 `1` |
 | `SMS_API_KEY` | 接码平台 key | 生产建议随手机号资产维护 |
 | `EMAIL_SOURCE` | 直接运行子进程时指定邮箱模式 | 服务端生产流程优先用后台配置 |
 | `INBOX_API_BASE` | 临时邮箱 API base URL | 使用 `EMAIL_SOURCE=inbox` 时需要 |
@@ -136,6 +137,14 @@ DB_NAME=plus_papay
 | `random` | 随机域名邮箱，验证码通过远程 IMAP 管理 API 查询 | 后台系统配置 / `RANDOM_EMAIL_DOMAIN` / `IMAP_ADMIN_PASSWORD` |
 | `pool` | 邮箱池，直接用 IMAP 连接真实邮箱 | 后台邮箱池 / `pool_email_imap_host` |
 | `inbox` | 临时邮箱 API | 后台系统配置 / `INBOX_API_BASE` |
+
+当前服务器部署只使用 `pool` 邮箱池模式。该模式下验证码读取走后台配置的 `pool_email_imap_host`，例如：
+
+```text
+outlook.office365.com
+```
+
+不会回退到 `random` 随机邮箱，也不会调用源码里的 `https://imap.chiyiyi.cloud`。如果邮箱池没有可用邮箱或邮箱缺少密码/OAuth2 凭证，任务会直接报错，要求先补充邮箱池。
 
 Gmail 也可以作为 `pool` 邮箱使用，但需要：
 
@@ -175,6 +184,50 @@ IMAP_ADMIN_PASSWORD=你的远程IMAP管理密码
 ```
 
 如果使用 `EMAIL_SOURCE=pool` 的邮箱池模式，生产流程会跳过远程 IMAP Key 生成。
+
+安全限制：
+
+- 只有 `EMAIL_SOURCE=random` 且配置了 `IMAP_ADMIN_PASSWORD` 时，才允许调用 `https://imap.chiyiyi.cloud`。
+- 服务器只用邮箱池时，不要配置 `IMAP_ADMIN_PASSWORD`，并保持后台邮箱来源为 `pool`。
+- `No IMAP credentials configured. IMAP features will be disabled.` 只是提示远程 IMAP 管理 API 未启用，不影响邮箱池模式。
+
+---
+
+## 浏览器流程代理桥接
+
+后台系统配置或 `.env` 中的 `PROXY` 主要用于 Playwright 浏览器流程。由于 Playwright 对带认证的 SOCKS5 代理支持有限，项目会通过 `local-proxy-bridge.js` 启动一个本地 SOCKS5 桥接端口，再连接上游代理。
+
+服务器部署默认链路：
+
+```text
+浏览器 -> 本地桥接端口 -> 远程 SOCKS5 代理 -> 目标网站
+```
+
+也就是服务器不会默认访问本机 `127.0.0.1:7897`。如果日志中看到旧链路：
+
+```text
+浏览器 -> :10900 -> VPN(http://:7897) -> 远程代理 -> 目标
+```
+
+说明运行的是旧代码，或显式开启了 VPN 中转。
+
+只有本地开发机需要先走 Clash/VPN 再连接远程代理时，才设置：
+
+```env
+PROXY_BRIDGE_USE_VPN=1
+```
+
+开启后链路会变成：
+
+```text
+浏览器 -> 本地桥接端口 -> VPN(http://127.0.0.1:7897) -> 远程 SOCKS5 代理 -> 目标网站
+```
+
+服务器没有 `7897` 本地代理时不要开启该变量，否则会出现：
+
+```text
+connect ECONNREFUSED 127.0.0.1:7897
+```
 
 ---
 
