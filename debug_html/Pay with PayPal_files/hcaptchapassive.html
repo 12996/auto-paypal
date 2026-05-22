@@ -1,0 +1,186 @@
+
+<!-- saved from url=(0014)about:internet -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<script>
+			var renderStartTime = null;
+			var renderEndTime = null;
+			var startTime=Date.now();
+			var hData= {};
+
+			function setStyle(element, stylename, stylevalue) {
+				try {
+					element.style[stylename] = stylevalue;
+				} catch (err) {}
+			}
+
+			function initHcaptchaPassive() {
+			
+				var eventMethod = window.addEventListener ? "addEventListener" : "attachEvent",
+						eventer = window[eventMethod],
+						messageEvent = eventMethod == "attachEvent" ? "onmessage" : "message",
+						mouseOverEvent = eventMethod == "attachEvent" ? "onmouseover" : "mouseover",
+						mouseLeaveEvent = eventMethod == "attachEvent" ? "onmouseleave" : "mouseleave",
+						clickEvent = eventMethod == "attachEvent" ? "onclick" : "click";
+				eventer(messageEvent,function(event) {
+					var data;
+					try {
+	
+						if(event.data === 'hcaptcha-setup'){
+							return;
+						}
+						// Domain check
+						if (event && !isPayPalDomain(event.origin)) {
+							return;
+						}
+						data = event && JSON.parse(event.data);
+					} catch(e) {
+						window.parent.postMessage(JSON.stringify({
+							error: 'error_parsing_data',
+							source: 'adframe',
+							action:'logData',
+							page:'HCAPTCHA_PASSIVE',
+						}), getTargetOrigin());
+						return;
+					}
+	
+					// Invalid request source or request data
+					if (!data || data.source !== 'ADS') {
+						return;
+					}
+	
+					// Handle hcaptcha intent
+					if (data.skey) {
+						renderHcaptchaPassive(data);
+					}
+				},false);
+	
+				function openwidget(){
+					window.parent.postMessage(JSON.stringify({
+						reason: 'size',
+						state: 'OPEN',
+						source: 'adframe'
+						}), getTargetOrigin());
+				}
+				document[eventMethod](mouseOverEvent, openwidget);
+				document[eventMethod](clickEvent, openwidget);
+				document[eventMethod](mouseLeaveEvent, function(){
+					window.parent.postMessage(JSON.stringify({
+						reason: 'size',
+						state: 'close',
+						source: 'adframe'
+						}), getTargetOrigin());
+				});
+			}
+
+			function renderHcaptchaPassive(data) {
+
+				renderStartTime = Date.now();
+
+				hData.skey = data.skey;
+	
+				var source = document.createElement("script");
+				source.src = 'https://js.hcaptcha.com/1/api.js?onload=checkVisitor&render=explicit&sentry=false'; // check localisation
+				source.async = true;
+				source.setAttribute('defer','');
+				document.head.appendChild(source);
+			}
+
+			var setHCField = function (token) {
+				renderEndTime = Date.now();
+				window.parent.postMessage(JSON.stringify({
+					token: token,
+					source: 'adframe',
+					renderEndTime:renderEndTime
+				}), getTargetOrigin());
+			};
+
+			var setExpired = function () {
+				window.parent.postMessage(JSON.stringify({
+					error: 'hcaptcha_passive_render_expired',
+					source: 'adframe',
+					action:'logData',
+					page:'HCAPTCHA_PASSIVE',
+				}), getTargetOrigin());
+			};
+
+			var checkVisitor = function () {
+				var skey = hData.skey || '';
+				g = document.createElement("div");
+				this.document.body.appendChild(g);
+				var _widgetID = hcaptcha.render(g, {
+					size: "invisible",
+					sitekey: skey,
+					callback: setHCField,
+					"expired-callback": setExpired,
+				});
+				hcaptcha.execute(_widgetID);
+			};
+			function isPayPalDomain(domain) {
+				var paypalDomainRegex = /\.(paypal)\.(com|cn)(:[\d]{1,5})?$/gi;
+				return paypalDomainRegex.test(domain);
+			}
+
+			function getTargetOrigin(){
+				var allowedDomains = ['paypal.com','paypalinc.com','venmo.com','paypalobjects.com'];
+				var targetOrigin = '/';
+				try{
+					if(!window.URL){
+						return targetOrigin;
+					}
+
+					var originUrl = "";
+					if(!document.referrer) {
+						var ancetorOrigins = window.location && window.location.ancestorOrigins;
+						ancetorOrigins = ancetorOrigins.length > 0 ? ancetorOrigins[0] : '';
+						originUrl = new window.URL(ancetorOrigins);
+					} else {
+						originUrl = new window.URL(document.referrer);
+					}
+					
+					if(!originUrl || !originUrl.hostname || typeof originUrl.hostname !== "string"){
+						return targetOrigin;
+					}
+
+					var originUrlParts = originUrl.hostname.split('.');
+					if(!originUrlParts){
+						return targetOrigin;
+					}
+
+					if(Array && Array.isArray && !Array.isArray(originUrlParts)){
+						return targetOrigin;
+					}
+
+					if(!originUrlParts.length || originUrlParts.length < 2){
+						return targetOrigin;
+					}
+
+					originUrlParts = originUrlParts.slice(-2);
+					if(!originUrlParts || !originUrlParts.length || originUrlParts.length < 2){
+						return targetOrigin;
+					}
+
+					var referrerDomain = originUrlParts.join('.');
+					if(!referrerDomain){
+						return targetOrigin;
+					}
+
+					if(allowedDomains.indexOf(referrerDomain) >= 0){
+						targetOrigin = originUrl.origin;
+					}
+
+				}
+				catch(e){
+					console.error(e);
+				}
+				return targetOrigin;
+
+			}
+
+			initHcaptchaPassive();
+		
+		</script>
+	<script src="./api.js.download" async="" defer=""></script></head>
+	<body>
+
+<div><iframe aria-hidden="true" data-hcaptcha-widget-id="0v52r9m336li" data-hcaptcha-response="P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.haJwZACjZXhwzmoQHx6ncGFzc2tlecUFu1Vw_5I8wJZa3kuNwNhEgGFlHxZJrjrWHReswMZz9gLzvTqbtV9RTIkm5njK9g7jOO6CA_Tu8Wj_sFaeYnRNwwPKL02Rcj-CkWEAxwKZRYEPJoinVi332sMxgetnS2dqBsXoJH3lyvR77VsNYPX4zknlS8t--4LsAt23EdVDScLAjnbUVqU_bOTE13vyI8Wc1l0CFlmo658KXAJTtxkAqAvw16qb1Tq9VibhrkCY_pkdm2ttsbH0roLpypaPFbg4joIiXfM6P0uk6iYohuYH3L4HYUYhT1RJ1AVzHp9kjJigPIxLS2WR6ag73gofBJisqEzHlbnhzLY0rcKYVGnZ-gOsRXxEQM-j4v9xfyedlmUtYo2GfZPnxZqRr5X_1hGzcdhcqbNqshkhH4S5FGuKlMKJEBSDODlODSmS5CaOBqJ2R-x2jhd9tyDw6AOG7HCnpmNX8xkuKnKTGYdOs4-hbjmiO2PoNXqw8NtOia__5hIy6cR4jugiEFXiYTTd9gqixg4pqRgy63zzANvRxMWk2WS-L7WPqzytgYsNf0xxcURLCudu41HFNcYeqGxzk8HSphGqsmCQl0o1UIbrHxTqaFWAcxdBvJC4RiUdKqRUG4fiotpZiPaS7MZOw06aLonYxCpOO5EoydO_FU0FSJtCuElX6L6wuo44uBvWT07towEkitOiH9qpwHZnQaEVA9ogOVANxxooAVe4z1efoFYR4o0EBTFChmg_iVQCEP7gkUV1QSuwkbZKyWXqvQXgVjLK39AijUi1cuWFW9GvWkE6KB1TaEzk-QPLJaQcsvMItsBCcFBsQiByPf9Okct2iIBXlt6aSW6sz8o2Zsb32XDXJNrceHxlpFmsba63etQvu7d5wRCZmLjOI0FvDyNWdKWq3jtX6dwE9gzqAx5ym-oU1ULQN6LA614yEOt8qzlwV5TG8U5i6_EFrS4B5n6rEezwxamC7dLtrvNz12ms44DmbQ3xD0TXnLiPS8gr0KK7dyTDcUwzEGcyk6f17YcL-PZLyz6gCfpm4lIfea24nmED56dQ-zgH4XHW8Do7j8CImaICbIoL2N8jNb1vbK8rxtUnIVRcaZA5cF3dBXWVgOiUmV2fYLdtsUHIoM9FIlgpSGUfP1Y8l--s9JawUPuJyduZnb71fRzQpr4pXCsSannUKqnfB1sfSoojUn3nM5DjYyX6W9-nITTqRIhjnomGUo-xFPsGLjzkqf8D5pRTH4A-uSkomJ_3mmgc7lckrMKtZg-evZFn-1RXsqcb4ctUKBGzB8nMjbMmFi_GVoQS9-DEPoco2DyKN_lyN49EFp8HpDjh2zYqzIOtyCc_dwCdc6ICRt43ZxGaynbRxw0WRWQUE7SqXkOKtUGZ7vyMD3_UmDNEZcao3huW83GYThtfCldZOAxaD3zLollwSzXHczNhyNAavfvUGFW4LKg37YP7RTO60Urg9C_BNcMXEel0Z_38wz1faVCis6ZkrmwOED1HDrAWfuLPOaHz2Z8H2eJOipKpt5wnTwSEioPqrsX9ol0YNgDiuzwdDepZmjmT4Q7NGCFJx5MuOEoybv5WALwFSyz4qWnfJ3qXNPDb8MRGJuvxIVjoXWP2CjH2CTujcFNLLNNN4bcccoWlbqoj_YUAaKiVWJai6NKHaBE4oreKSrOohKxhDxen4IoKU_B4ERN5CbHUNGpVZAqd2ig4GvGoVUbDl7mP_nWpXBG_EgXJ-7jSatGrqH1zWqRRe8LS-F9hbxXEn8KuRF98qUUYy6QGky8pN-J_grTBWkYc12xO7UL9cN0oFpZt2BTzmbwweeD0HGACmWe07bzCUfkiYtJWcgiiJKhK7CIiFWQRiletmBpnqnUxynjnBO7jfoJSofrj9RATsHzdA1sqidEJk9Jem1pjRD1I0LPcPI8hxyyxOBEhagGcsR0iX2pWHwNbu9dlMh9XMAAjasNMX_LAPaJrcqg0MDA0ODFkZqhzaGFyZF9pZM4NO2Qp.Zxpyd9gNRswG1C9duEeReGo6PTT7b2IGvPt3IFk0dVA" src="./hcaptcha.html" style="display: none;"></iframe><textarea id="g-recaptcha-response-0v52r9m336li" name="g-recaptcha-response" style="display: none;"></textarea><textarea id="h-captcha-response-0v52r9m336li" name="h-captcha-response" style="display: none;"></textarea></div><div aria-hidden="true" style="background-color: rgb(255, 255, 255); border: 1px solid rgb(215, 215, 215); box-shadow: rgba(0, 0, 0, 0.1) 0px 0px 4px; border-radius: 4px; left: auto; top: -10000px; z-index: -2147483648; position: absolute; pointer-events: auto; transition: opacity 0.15s ease-out; opacity: 0; visibility: hidden;"><div style="position: relative; z-index: 1;"><iframe src="./hcaptcha(1).html" frameborder="0" scrolling="no" allow="private-state-token-redemption" title="hCaptcha challenge" style="border: 0px; z-index: 2000000000; position: relative;"></iframe></div><div style="width: 100%; height: 100%; position: fixed; pointer-events: none; top: 0px; left: 0px; z-index: 0; background-color: rgb(255, 255, 255); opacity: 0.05;"></div><div style="border-width: 11px; border-style: none; position: absolute; pointer-events: none; margin-top: -11px; z-index: 1; right: 100%;"><div style="border-width: 10px; border-style: solid; border-color: transparent rgb(255, 255, 255) transparent transparent; position: relative; top: 10px; z-index: 1;"></div><div style="border-width: 11px; border-style: solid; border-color: transparent rgb(215, 215, 215) transparent transparent; position: relative; top: -11px; z-index: 0;"></div></div></div></body></html>

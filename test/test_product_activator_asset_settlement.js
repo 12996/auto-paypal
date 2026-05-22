@@ -39,17 +39,22 @@ async function run() {
     fakeStore.deleteCardAsset = async (payload) => {
         calls.push(['deleteCard', payload]);
     };
+    fakeStore.deletePhoneAsset = async (phone) => {
+        calls.push(['deletePhone', phone]);
+    };
 
     await __test.settleActivationAssets(fakeStore, {
         cardAssetId: 43,
         phoneAssetId: 8,
+        phone: { phone: '15550002222' },
         card: {
             key: '4859-F868-EMFMYMYY-B03E',
             number: '4859540146849186'
         }
     }, {
         success: false,
-        deleteCard: true
+        deleteCard: true,
+        deletePhone: true
     });
 
     assert.deepStrictEqual(calls, [
@@ -58,6 +63,7 @@ async function run() {
             cardKey: '4859-F868-EMFMYMYY-B03E',
             cardNumber: '4859540146849186'
         }],
+        ['deletePhone', '15550002222'],
         ['release', { phoneAssetId: 8, cardAssetId: 43 }]
     ]);
 

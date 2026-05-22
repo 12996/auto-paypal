@@ -1,0 +1,3 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,350464,e=>{"use strict";var r=e.i(438232),a=e.i(15010),o=e.i(144318);e.s(["default",0,function(e){let{error:t}=e;return(0,a.useEffect)(()=>{let e=new URLSearchParams(document.location.search);if("ChunkLoadError"===t.name&&!e.has("preventReload")){let e=new URL(window.location.href);e.searchParams.append("preventReload","true"),window.location.replace(e.href);return}window.location.replace(`/pay${(0,o.getGenericErrorUrl)({code:"GLOBAL_ERROR",urlSearchParameters:e})}`)},[t]),(0,r.jsx)("html",{lang:"en",children:(0,r.jsx)("body",{})})}])}]);
+
+//# sourceMappingURL=07y6.ij5syi3_.js.map

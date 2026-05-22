@@ -1248,22 +1248,28 @@ async function run(options = {}) {
                 const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
 
                 node.focus?.();
+                node.click?.();
                 if (descriptor && typeof descriptor.set === 'function') {
                     descriptor.set.call(node, nextValue);
                 } else {
                     node.value = nextValue;
                 }
+                if (node._valueTracker && typeof node._valueTracker.setValue === 'function') {
+                    node._valueTracker.setValue('');
+                }
 
                 const inputEvent = typeof InputEvent === 'function'
                     ? new InputEvent('input', {
                         bubbles: true,
+                        composed: true,
                         inputType: 'insertReplacementText',
                         data: nextValue
                     })
-                    : new Event('input', { bubbles: true });
+                    : new Event('input', { bubbles: true, composed: true });
                 node.dispatchEvent(inputEvent);
-                node.dispatchEvent(new Event('change', { bubbles: true }));
-                node.dispatchEvent(new Event('blur', { bubbles: true }));
+                node.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                node.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true }));
+                node.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
             }, String(value || ''));
         }
 
@@ -1290,10 +1296,32 @@ async function run(options = {}) {
                 const actual = normalizePayPalComponentValue(actualValue, options);
                 const expected = normalizePayPalComponentValue(expectedValue, options);
                 if (actual === expected) {
+                    await page.waitForTimeout(350);
+                    const stableValue = await locator.inputValue().catch(() => '');
+                    const stable = normalizePayPalComponentValue(stableValue, options);
+                    if (stable !== expected) {
+                        console.warn(`⚠️ [组件填充] PayPal ${label} 第 ${attempt} 次被组件状态回滚：实际="${stableValue}" 期望="${expectedValue}"`);
+                        continue;
+                    }
                     console.log(`✅ [组件填充] PayPal ${label}`);
                     return true;
                 }
                 console.warn(`⚠️ [组件填充] PayPal ${label} 第 ${attempt} 次校验失败：实际="${actualValue}" 期望="${expectedValue}"`);
+            }
+
+            try {
+                await locator.fill(expectedValue, { timeout: options.timeout || 5000 });
+                await dispatchPayPalComponentEvents(locator, ['input', 'change', 'focusout', 'blur']);
+                await page.waitForTimeout(350);
+                const actualValue = await locator.inputValue().catch(() => '');
+                const actual = normalizePayPalComponentValue(actualValue, options);
+                const expected = normalizePayPalComponentValue(expectedValue, options);
+                if (actual === expected) {
+                    console.log(`✅ [组件填充] PayPal ${label} 使用 fill 兜底完成`);
+                    return true;
+                }
+            } catch (error) {
+                console.warn(`⚠️ [组件填充] PayPal ${label} fill 兜底失败：${error.message}`);
             }
 
             if (required) {
@@ -1302,11 +1330,95 @@ async function run(options = {}) {
             return false;
         }
 
+        async function setAllVisiblePayPalEmailValues(page, selectors, email) {
+            const result = await page.evaluate(({ selectors, nextValue }) => {
+                const isVisible = (node) => !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+                const describe = (node) => {
+                    const attrs = [
+                        `tag=${node.tagName.toLowerCase()}`,
+                        `id=${node.getAttribute('id') || ''}`,
+                        `name=${node.getAttribute('name') || ''}`,
+                        `type=${node.getAttribute('type') || ''}`,
+                        `placeholder=${node.getAttribute('placeholder') || ''}`,
+                        `aria-label=${node.getAttribute('aria-label') || ''}`,
+                        `autocomplete=${node.getAttribute('autocomplete') || ''}`
+                    ];
+                    return attrs.join(' ');
+                };
+                const hasEmailHint = (node) => describe(node).toLowerCase().includes('email');
+                const candidates = [];
+                const seen = new Set();
+                const addNode = (node) => {
+                    if (!node || seen.has(node)) return;
+                    if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)) return;
+                    if (!isVisible(node)) return;
+                    if (!hasEmailHint(node)) return;
+                    seen.add(node);
+                    candidates.push(node);
+                };
+
+                for (const selector of selectors) {
+                    try {
+                        document.querySelectorAll(selector).forEach(addNode);
+                    } catch (_) { }
+                }
+                document.querySelectorAll('input, textarea').forEach(addNode);
+
+                const summaries = [];
+                for (const node of candidates) {
+                    const proto = node instanceof HTMLTextAreaElement
+                        ? HTMLTextAreaElement.prototype
+                        : HTMLInputElement.prototype;
+                    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+                    node.focus?.();
+                    node.click?.();
+                    if (descriptor && typeof descriptor.set === 'function') {
+                        descriptor.set.call(node, nextValue);
+                    } else {
+                        node.value = nextValue;
+                    }
+                    if (node._valueTracker && typeof node._valueTracker.setValue === 'function') {
+                        node._valueTracker.setValue('');
+                    }
+                    const inputEvent = typeof InputEvent === 'function'
+                        ? new InputEvent('input', {
+                            bubbles: true,
+                            composed: true,
+                            inputType: 'insertReplacementText',
+                            data: nextValue
+                        })
+                        : new Event('input', { bubbles: true, composed: true });
+                    node.dispatchEvent(inputEvent);
+                    node.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                    node.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true }));
+                    node.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+                    summaries.push(`${describe(node)} value=${node.value || ''}`);
+                }
+
+                return { count: candidates.length, summaries };
+            }, { selectors, nextValue: String(email || '') });
+
+            if (result.count > 0) {
+                console.log(`✅ [组件填充] PayPal 已批量写入 ${result.count} 个可见 email 输入框（大小写不敏感）`);
+                for (const summary of result.summaries.slice(0, 5)) {
+                    console.log(`   [email候选] ${summary}`);
+                }
+            }
+            return result;
+        }
+
         async function fillPayPalEmailFromVisibleCandidates(page, selectors, email) {
             const deadline = Date.now() + 10000;
+            let nextProgressLogAt = Date.now() + 3000;
             let lastError = null;
 
+            console.log(`⏳ [组件填充] PayPal 正在查找所有可见 email 输入框（大小写不敏感），最长等待 10 秒...`);
             while (Date.now() < deadline) {
+                const batchResult = await setAllVisiblePayPalEmailValues(page, selectors, email);
+                if (batchResult.count > 0) {
+                    await page.waitForTimeout(350);
+                }
+
                 for (const selector of selectors) {
                     const matches = page.locator(selector);
                     const count = await matches.count().catch(() => 0);
@@ -1315,13 +1427,37 @@ async function run(options = {}) {
                         if (!await candidate.isVisible().catch(() => false)) continue;
 
                         try {
-                            const filled = await componentFillPayPalInput(page, candidate, email, `登录邮箱(${selector})`, { timeout: 2000 });
-                            if (filled) return true;
+                            const actualValue = await candidate.inputValue({ timeout: 500 }).catch(() => '');
+                            const actual = normalizePayPalComponentValue(actualValue);
+                            const expected = normalizePayPalComponentValue(email);
+                            if (actual === expected) {
+                                console.log(`✅ [组件填充] PayPal 邮箱候选 ${selector}[${i}] 已写入并校验通过`);
+                                return candidate;
+                            }
                         } catch (error) {
                             lastError = error;
-                            console.warn(`⚠️ [组件填充] PayPal 登录邮箱候选失败 ${selector}: ${error.message}`);
+                            console.warn(`⚠️ [组件填充] PayPal 登录邮箱候选校验失败 ${selector}: ${error.message}`);
                         }
                     }
+                }
+                const looseCandidate = await findVisiblePayPalFieldByHints(page, paypalFieldHints.email, '登录邮箱', 300);
+                if (looseCandidate) {
+                    try {
+                        const actualValue = await looseCandidate.inputValue({ timeout: 500 }).catch(() => '');
+                        const actual = normalizePayPalComponentValue(actualValue);
+                        const expected = normalizePayPalComponentValue(email);
+                        if (actual === expected) {
+                            console.log(`✅ [组件填充] PayPal loose 邮箱候选已写入并校验通过`);
+                            return looseCandidate;
+                        }
+                    } catch (error) {
+                        lastError = error;
+                        console.warn(`⚠️ [组件填充] PayPal 登录邮箱 loose 候选校验失败: ${error.message}`);
+                    }
+                }
+                if (Date.now() >= nextProgressLogAt) {
+                    console.log(`⏳ [组件填充] PayPal 仍在等待邮箱输入框渲染或变为可见...`);
+                    nextProgressLogAt = Date.now() + 3000;
                 }
                 await page.waitForTimeout(250);
             }
@@ -1373,7 +1509,12 @@ async function run(options = {}) {
                 'input[name="email"]',
                 'input[type="email"]',
                 'input[placeholder="Email"]',
-                'input[aria-label="Email"]'
+                'input[aria-label="Email"]',
+                'input[id*="email" i]',
+                'input[name*="email" i]',
+                'input[placeholder*="email" i]',
+                'input[aria-label*="email" i]',
+                'input[autocomplete*="email" i]'
             ],
             phone: [
                 '#phone',
@@ -1427,7 +1568,54 @@ async function run(options = {}) {
             ]
         };
 
-        const pickFirstVisiblePayPalField = async (page, selectors, label, perTryMs = 600) => {
+        const paypalFieldHints = {
+            firstName: ['first', 'given'],
+            lastName: ['last', 'family', 'surname'],
+            cardNumber: ['card number', 'cardnumber', 'cc-number'],
+            expiry: ['expiration', 'expiry', 'exp', 'cc-exp'],
+            cvc: ['cvv', 'cvc', 'security code', 'securitycode', 'cc-csc'],
+            email: ['email'],
+            phone: ['phone', 'mobile', 'tel'],
+            address: ['street', 'address-line1', 'billingline1', 'address'],
+            city: ['city', 'address-level2'],
+            state: ['state', 'province', 'address-level1'],
+            zip: ['zip', 'postal', 'postal-code'],
+            password: ['password']
+        };
+
+        const findVisiblePayPalFieldByHints = async (page, hints, label, perTryMs = 300) => {
+            const normalizedHints = (hints || [])
+                .map((hint) => String(hint || '').toLowerCase().trim())
+                .filter(Boolean);
+            if (normalizedHints.length === 0) return null;
+
+            const candidates = page.locator('input, select, textarea');
+            const count = await candidates.count().catch(() => 0);
+            for (let i = 0; i < count; i += 1) {
+                const loc = candidates.nth(i);
+                if (!await loc.isVisible({ timeout: perTryMs }).catch(() => false)) continue;
+
+                const haystack = await loc.evaluate((node) => {
+                    const attrs = [
+                        node.getAttribute('id'),
+                        node.getAttribute('name'),
+                        node.getAttribute('placeholder'),
+                        node.getAttribute('aria-label'),
+                        node.getAttribute('autocomplete'),
+                        node.getAttribute('type')
+                    ];
+                    return attrs.filter(Boolean).join(' ').toLowerCase();
+                }).catch(() => '');
+
+                if (normalizedHints.some((hint) => haystack.includes(hint))) {
+                    console.log(`✅ [组件匹配] PayPal ${label} 通过属性包含匹配: ${haystack}`);
+                    return loc;
+                }
+            }
+            return null;
+        };
+
+        const pickFirstVisiblePayPalField = async (page, selectors, label, perTryMs = 600, hints = []) => {
             for (const sel of selectors) {
                 const matches = page.locator(sel);
                 const count = await matches.count().catch(() => 0);
@@ -1438,9 +1626,139 @@ async function run(options = {}) {
                     }
                 }
             }
+            const looseMatch = await findVisiblePayPalFieldByHints(page, hints, label, perTryMs);
+            if (looseMatch) return looseMatch;
             console.warn(`⚠️ [组件填充] PayPal ${label} 未命中候选选择器: ${selectors.join(', ')}`);
             return null;
         };
+
+        const hasVisiblePayPalSelector = async (page, selectors, perTryMs = 200) => {
+            for (const selector of selectors) {
+                const matches = page.locator(selector);
+                const count = await matches.count().catch(() => 0);
+                for (let i = 0; i < count; i += 1) {
+                    if (await matches.nth(i).isVisible({ timeout: perTryMs }).catch(() => false)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+
+        const isPayPalPaymentInfoVisible = async (page) => {
+            return hasVisiblePayPalSelector(page, paypalFieldSelectors.cardNumber, 250)
+                || hasVisiblePayPalSelector(page, paypalFieldSelectors.firstName, 250)
+                || hasVisiblePayPalSelector(page, paypalFieldSelectors.password, 250);
+        };
+
+        const collectPayPalEmailDiagnostics = async (page) => {
+            return page.evaluate(() => {
+                const readInput = (node) => ({
+                    id: node.getAttribute('id') || '',
+                    name: node.getAttribute('name') || '',
+                    type: node.getAttribute('type') || '',
+                    placeholder: node.getAttribute('placeholder') || '',
+                    value: node.value || '',
+                    visible: !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length)
+                });
+                const inputs = Array.from(document.querySelectorAll('input#email, input[name="login_email"], input[type="email"], input[name*="email" i]'))
+                    .slice(0, 8)
+                    .map(readInput);
+                const textSelectors = [
+                    '[role="alert"]',
+                    '[aria-live]',
+                    '[class*="error" i]',
+                    '[data-testid*="error" i]'
+                ];
+                const messages = Array.from(document.querySelectorAll(textSelectors.join(',')))
+                    .map((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim())
+                    .filter(Boolean)
+                    .slice(0, 8);
+                return { url: location.href, inputs, messages };
+            }).catch((error) => ({ url: page.url(), error: error.message, inputs: [], messages: [] }));
+        };
+
+        async function waitForPayPalEmailSubmitAccepted(page, timeoutMs = 15000) {
+            const emailSelectors = [
+                'input#email',
+                'input[name="login_email"]',
+                'input[type="email"]',
+                'input[id*="email" i]',
+                'input[name*="email" i]',
+                'input[placeholder*="email" i]',
+                'input[aria-label*="email" i]',
+                'input[autocomplete*="email" i]'
+            ];
+            const deadline = Date.now() + timeoutMs;
+            let nextProgressLogAt = Date.now() + 5000;
+            console.log(`⏳ [步骤] 等待 PayPal 接受邮箱提交，最长 ${Math.round(timeoutMs / 1000)} 秒...`);
+            while (Date.now() < deadline) {
+                if (await isPayPalPaymentInfoVisible(page)) {
+                    return { ok: true, reason: 'payment_form_visible' };
+                }
+
+                const emailVisible = await hasVisiblePayPalSelector(page, emailSelectors, 150);
+                const continueVisible = await page.getByRole('button', { name: /Continue to Payment|Continue/i })
+                    .first()
+                    .isVisible({ timeout: 150 })
+                    .catch(() => false);
+                if (!emailVisible && !continueVisible) {
+                    return { ok: true, reason: 'email_form_gone' };
+                }
+
+                if (Date.now() >= nextProgressLogAt) {
+                    console.log(`⏳ [步骤] PayPal 邮箱页仍可见，继续等待提交结果...`);
+                    nextProgressLogAt = Date.now() + 5000;
+                }
+                await page.waitForTimeout(300);
+            }
+
+            return {
+                ok: false,
+                reason: 'email_form_still_visible',
+                diagnostics: await collectPayPalEmailDiagnostics(page)
+            };
+        }
+
+        async function submitPayPalLoginEmail(page, selectors, email) {
+            let lastResult = null;
+            for (let attempt = 1; attempt <= 3; attempt += 1) {
+                console.log(`⏳ [步骤] PayPal 登录邮箱提交尝试 ${attempt}/3...`);
+                const emailInput = await fillPayPalEmailFromVisibleCandidates(page, selectors, email);
+                await emailInput.fill(String(email || ''), { timeout: 3000 }).catch((error) => {
+                    console.warn(`⚠️ [组件填充] PayPal 登录邮箱 fill 强化失败：${error.message}`);
+                });
+                await dispatchPayPalComponentEvents(emailInput, ['input', 'change', 'focusout', 'blur']);
+                await page.waitForTimeout(350);
+
+                const beforeSubmitValue = await emailInput.inputValue().catch(() => '');
+                const expected = normalizePayPalComponentValue(email);
+                const actual = normalizePayPalComponentValue(beforeSubmitValue);
+                if (actual !== expected) {
+                    throw new Error(`PayPal 登录邮箱提交前值不一致：实际="${beforeSubmitValue}" 期望="${email}"`);
+                }
+                console.log(`✅ [组件填充] PayPal 登录邮箱提交前校验通过`);
+
+                const continueBtn = page.getByRole('button', { name: /Continue to Payment|Continue/i }).first();
+                console.log(`⏳ [步骤] 等待 PayPal Continue 按钮可见...`);
+                await continueBtn.waitFor({ state: 'visible', timeout: 15000 });
+                await page.waitForTimeout(500);
+                await continueBtn.click({ force: true });
+                console.log(`✅ [步骤] 已点击 PayPal Continue，等待邮箱提交生效（第 ${attempt}/3 次）。`);
+
+                lastResult = await waitForPayPalEmailSubmitAccepted(page, 15000);
+                if (lastResult.ok) {
+                    console.log(`✅ [步骤] PayPal 邮箱提交已生效：${lastResult.reason}`);
+                    return true;
+                }
+
+                console.warn(`⚠️ [步骤] PayPal 邮箱提交后仍停留在邮箱页，准备重填重试：${JSON.stringify(lastResult.diagnostics)}`);
+                await debug.saveOnError(page, `paypal_email_submit_retry_${attempt}`).catch(() => {});
+                await page.waitForTimeout(800);
+            }
+
+            throw new Error(`PayPal 邮箱提交失败，最后状态：${JSON.stringify(lastResult)}`);
+        }
 
         async function componentSelectPayPalOption(locator, value, label, options = {}) {
             const expectedValue = String(value || '');
@@ -1506,7 +1824,7 @@ async function run(options = {}) {
         };
 
         // 代理慢时 Stripe 会分段渲染，给足窗口并多次采样金额元素。
-        const amountWaitTimeoutMs = 12000;
+        const amountWaitTimeoutMs = 15000;
         const amountPollIntervalMs = 1500;
         const amountDeadline = Date.now() + amountWaitTimeoutMs;
         let latestAmountTexts = [];
@@ -2017,8 +2335,8 @@ async function run(options = {}) {
             }
 
             // 重新检查字段可见性
-            const zipVisible = await zipLoc.isVisible({ timeout: 2000 }).catch(() => false);
-            const cityVisible = await cityLoc.isVisible({ timeout: 2000 }).catch(() => false);
+            const zipVisible = await zipLoc.isVisible({ timeout: 1000 }).catch(() => false);
+            const cityVisible = await cityLoc.isVisible({ timeout: 1000 }).catch(() => false);
 
             if (Math.random() > 0.5) {
                 if (zipVisible) {
@@ -2114,7 +2432,7 @@ async function run(options = {}) {
         for (const selector of submitButtonSelectors) {
             try {
                 const candidateButton = page.locator(selector).first();
-                const isVisible = await candidateButton.isVisible({ timeout: 2000 }).catch(() => false);
+                const isVisible = await candidateButton.isVisible({ timeout: 200 }).catch(() => false);
 
                 if (isVisible) {
                     // 检查按钮是否可点击（不是禁用状态）
@@ -2540,25 +2858,17 @@ async function run(options = {}) {
                 'input[name="login_email"]',
                 'input[name="email"]',
                 'input[type="email"]',
+                'input[id*="email" i]',
                 'input[name*="email" i]',
-                'input[placeholder*="Email" i]'
+                'input[placeholder*="email" i]',
+                'input[aria-label*="email" i]',
+                'input[autocomplete*="email" i]'
             ];
-            await fillPayPalEmailFromVisibleCandidates(page, emailSelectors, CONFIG.billing.email);
+            await submitPayPalLoginEmail(page, emailSelectors, CONFIG.billing.email);
         } catch (e) {
             await debug.saveOnError(page, 'paypal_email_input');
             throw new Error(`PayPal 邮箱输入框定位失败: ${e.message}`);
         }
-        await page.waitForTimeout(500);
-
-        const continueBtn = page.getByRole('button', { name: 'Continue to Payment' });
-        try {
-            await continueBtn.waitFor({ state: 'visible', timeout: 15000 });
-        } catch (e) {
-            await debug.saveOnError(page, 'paypal_continue_btn');
-            throw new Error(`PayPal Continue 按钮未出现: ${e.message}`);
-        }
-        await page.waitForTimeout(500);
-        await continueBtn.click({ force: true });
         console.log("✅ [步骤] 已提交邮箱，进入支付信息填写页。");
 
         // 等页面渲染完成再开始填表。
@@ -2572,7 +2882,7 @@ async function run(options = {}) {
         let cardReady = false;
         while (Date.now() < cardWaitDeadline) {
             try {
-                cardLocator = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.cardNumber, 'Card Number', 800);
+                cardLocator = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.cardNumber, 'Card Number', 800, paypalFieldHints.cardNumber);
                 if (cardLocator) { cardReady = true; break; }
             } catch (_) { }
             const solved = await solveSlider();
@@ -2585,7 +2895,7 @@ async function run(options = {}) {
         if (!cardReady) {
             // 兜底：再尝试一次显式 waitFor，让原始报错也能被父进程捕捉
             try {
-                cardLocator = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.cardNumber, 'Card Number', 5000);
+                cardLocator = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.cardNumber, 'Card Number', 5000, paypalFieldHints.cardNumber);
                 if (!cardLocator) throw new Error('未找到可见 Card Number 输入框');
             } catch (e) {
                 await debug.saveOnError(page, 'paypal_card_input');
@@ -2626,7 +2936,7 @@ async function run(options = {}) {
 
         const filledPayPalFields = {};
         const fillRequiredPayPalField = async (key, value, label, options = {}) => {
-            const loc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors[key], label, options.perTryMs || 800);
+            const loc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors[key], label, options.perTryMs || 800, paypalFieldHints[key]);
             if (!loc) {
                 await debug.saveOnError(page, `paypal_${key}_missing`);
                 throw new Error(`PayPal ${label} 输入框未出现，selectors=${paypalFieldSelectors[key].join(', ')}`);
@@ -2636,7 +2946,7 @@ async function run(options = {}) {
             return loc;
         };
         const fillOptionalPayPalField = async (key, value, label, options = {}) => {
-            const loc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors[key], label, options.perTryMs || 300);
+            const loc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors[key], label, options.perTryMs || 300, paypalFieldHints[key]);
             if (!loc) return null;
             const filled = await componentFillPayPalInput(page, loc, value, label, { ...options, required: false });
             if (filled) filledPayPalFields[key] = loc;
@@ -2675,12 +2985,12 @@ async function run(options = {}) {
         };
 
         // City
-        const cityLoc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.city, 'City', 500);
+        const cityLoc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.city, 'City', 500, paypalFieldHints.city);
         if (cityLoc) filledPayPalFields.city = cityLoc;
         await fillPayPalComponentIfPresent(cityLoc, billing.city, 'City');
 
         // State —— 一般是 <select>
-        const stateLoc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.state, 'State', 500);
+        const stateLoc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.state, 'State', 500, paypalFieldHints.state);
         if (stateLoc) {
             await componentSelectPayPalOption(stateLoc, billing.state, 'State', { required: false });
             filledPayPalFields.state = stateLoc;
@@ -2689,7 +2999,7 @@ async function run(options = {}) {
         }
 
         // ZIP code
-        const zipLoc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.zip, 'ZIP', 500);
+        const zipLoc = await pickFirstVisiblePayPalField(page, paypalFieldSelectors.zip, 'ZIP', 500, paypalFieldHints.zip);
         if (zipLoc) filledPayPalFields.zip = zipLoc;
         await fillPayPalComponentIfPresent(zipLoc, billing.zip, 'ZIP', { digitsMode: true });
 
@@ -2763,7 +3073,7 @@ async function run(options = {}) {
         // Phase 6: 最终确认
         const finalSubmitBtn = page.locator("button:has-text('Agree and Continue'), button:has-text('Agree & Continue')").first();
         console.log("⏳ [步骤] 正在等待最终确认按钮...");
-        await page.waitForTimeout(5000);
+        await page.waitForTimeout(3000);
         await page.waitForLoadState('networkidle');
         await solveSlider(); // PayPal 页面的滑块检查
         await checkCriticalErrors();

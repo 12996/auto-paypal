@@ -150,7 +150,7 @@ IP 冷却检查：
 3. 组装子进程环境变量，包含 CARD 与 BILLING 字段：`server.js:2368-2383`
 4. 调用 `runCheckoutScript()` 启动 `index.js`：`server.js:2391-2413`
 5. 分析输出、更新任务日志、广播进度：`server.js:2414-2443`
-6. 根据分析结果处理银行卡禁用/成功回写；手机号状态不由自动流程作废，只由管理员在后台维护：`server.js:2457-2477`
+6. 根据分析结果处理银行卡禁用、手机号报废或成功回写；明确手机号不可用/短信异常时会自动把手机号改为 `已报废`：`server.js`
 7. `finally` 中先落库银行卡状态或禁用结果，再释放本次抢占的资产：`server.js:2449-2471`
 8. 如果 `shouldRetry=false` 或已到最大次数，结束循环：`server.js:2472-2476`
 
@@ -247,7 +247,7 @@ BILLING_NAME    = 账单姓名
 - 无激活资格 / 无 PayPal 审批链接 / 金额校验失败 -> `failed`，不重试：`server.js:969-980`
 - 代理认证/余额问题 -> `failed` 或 `maintenance`：`server.js:983-1002`
 - 致命拦截、短信异常、支付检测失败、PayPal/Stripe 驳回等 -> `retry`：`server.js:1005-1109`
-- 手机号异常时只重试，不自动禁用手机号；手机号是否作废由管理员在后台手机号池手动设置。
+- 手机号被拒绝或短信异常时 `deletePhone=true`，会在释放锁前调用 `deletePhoneAsset()` 把手机号改为 `已报废`。
 - 银行卡被拒且已经到达 PayPal 阶段时 `deleteCard=true`，会在释放锁前禁用银行卡：`server.js:1042-1050`、`server.js:2449-2463`、`mysql-store.js:950-965`
 
 进度由输出关键字映射：
@@ -268,7 +268,8 @@ BILLING_NAME    = 账单姓名
 - `shouldRollbackCdk = false`，CDK 保持已使用：`server.js:2508-2510`
 - 重置 CDK 失败计数：`server.js:2510`、`mysql-store.js:861-868`
 - 重置 IP 失败限制：`server.js:2511-2513`、`mysql-store.js:905-912`
-- 激活成功的尝试在释放资产锁前先标记本次银行卡已激活，并更新手机号/银行卡成功次数：`server.js:2449-2471`、`mysql-store.js:971-982`、`mysql-store.js:1516-1540`
+- 激活成功的尝试在释放资产锁前先标记本次银行卡已激活，并更新手机号/银行卡成功次数：`server.js`、`mysql-store.js`
+- 手机号不可用或短信异常的失败尝试在释放资产锁前先把本次手机号改为 `已报废`，避免后续任务再次取用。
 
 失败时：
 

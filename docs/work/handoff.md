@@ -2,6 +2,107 @@
 
 状态：active
 
+## 本次任务补充：手机号不可用时自动报废
+
+目标：当任务出现 `status=failed`、`message=手机号不可用` 或短信异常导致手机号不可用时，把本次运行手机号自动改为 `已报废`。
+
+已完成：
+
+- `server.js`
+  - `analyzeProcessOutput()` 中明确手机号不可用分支改为 `deletePhone=true`：
+    - `手机号被拒绝或系统拦截`
+    - `短信验证码超时`
+    - `该手机号无验证码`
+    - `手机号短信验证异常`
+  - `settleRunProcessAssets()` 新增手机号结算：失败且 `deletePhone=true` 时调用 `store.deletePhoneAsset(runtimeAssets.phone.phone)`。
+  - 自助激活结算时传入 `deletePhone`，并记录手机号已报废日志。
+- `product_activator.js`
+  - 同步手机号不可用/短信异常分支为 `deletePhone=true`。
+  - `settleActivationAssets()` 新增手机号报废结算。
+  - 成品号激活结算时传入 `deletePhone`。
+- 测试：
+  - `test/test_phone_assets_auto_disable.js`
+  - `test/test_run_process_asset_settlement.js`
+  - `test/test_product_activator_asset_settlement.js`
+
+验证：
+
+- `node --check .\server.js`：通过。
+- `node --check .\product_activator.js`：通过。
+- `node --check .\test\test_phone_assets_auto_disable.js`：通过。
+- `node --check .\test\test_run_process_asset_settlement.js`：通过。
+- `node .\test\test_phone_assets_auto_disable.js`：通过。
+- `node .\test\test_run_process_asset_settlement.js`：通过。
+- `node .\test\test_product_activator_asset_settlement.js`：通过。
+- `node .\test\test_product_activator_analysis.js`：通过。
+
+注意：
+
+- 这条新规则覆盖下面旧交接里的“手机号不自动作废，只由管理员后台判断”。当前有效规则是：明确手机号不可用/短信异常时自动报废。
+- 非手机号问题仍不报废手机号；银行卡拒绝只报废银行卡。
+
+## 本次任务补充：撤销短信接口直连改动
+
+目标：按用户确认，短信接口仍应跟随浏览器上下文代理/ProxyBridge；撤销上一轮“短信接口直连”和 key 自动归一化改动。
+
+已完成：
+
+- `index.js`
+  - 删除 `normalizeSmsApiKey()`、`buildSmsApiUrl()`、`directFetchText()`。
+  - `getSMSCode()` 恢复为 `context.request.get(apiUrl)`，继续继承浏览器代理。
+  - `apiUrl` 恢复为原始拼接：`http://a.62-us.com/api/get_sms?key=${CONFIG.billing.smsKey}`。
+- `test/test_sms_api_static.js`
+  - 删除该测试，因为它断言短信接口必须直连，已与当前需求相反。
+
+验证：
+
+- `node --check .\index.js`：通过。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+- `git diff --check -- index.js test\test_sms_api_static.js docs\work\handoff.md docs\work\work-log.md`：通过。
+
+注意：
+
+- 如果再次出现 `key=key=...`，需要在手机号池/运行时配置里把短信 key 保存为纯 key，不在代码里自动修正。
+- 如果再次出现 `Socks5 proxy rejected connection`，说明当前远程代理无法访问短信接口，这是按当前需求保留的代理链路问题。
+
+## 本次任务补充：PayPal 登录邮箱提交验证与重试
+
+目标：解决 PayPal 页面中日志显示邮箱已组件填充、Continue 点击正确，但 PayPal 实际未接受邮箱值，导致后续卡在邮箱步骤的问题。
+
+已完成：
+
+- `index.js`
+  - `setPayPalComponentValue()` 补充 React `_valueTracker` 重置、`composed` 事件和 `focusout`，提高受控输入框状态同步成功率。
+  - `componentFillPayPalInput()` 填入后增加稳定复查；如果值被组件状态回滚，会继续重试。
+  - `componentFillPayPalInput()` 增加 `locator.fill()` 兜底，但不恢复逐字符输入/鼠标模拟。
+  - `fillPayPalEmailFromVisibleCandidates()` 改为返回实际命中的邮箱输入框。
+  - 新增 `submitPayPalLoginEmail()`：
+    - 填写邮箱后提交前再次校验输入框值。
+    - 提交前对邮箱输入框再执行一次 `locator.fill()` 强化写入，并重新触发 `input/change/focusout/blur`。
+    - 点击 Continue 后等待邮箱表单消失或支付信息表单出现。
+    - 如果仍停留在邮箱页，会采集当前邮箱输入框和错误提示诊断，保存 `paypal_email_submit_retry_*` 调试页面，并最多重试 3 次。
+  - 新增 `setAllVisiblePayPalEmailValues()`：邮箱阶段扫描所有可见 `input/textarea`，对 `id/name/type/placeholder/aria-label/autocomplete` 做小写匹配，只要属性包含 `email` 就批量写入，不再只依赖单个候选。
+  - 邮箱选择器补充大小写不敏感兜底：`input[id*="email" i]`、`input[name*="email" i]`、`input[placeholder*="email" i]`、`input[aria-label*="email" i]`、`input[autocomplete*="email" i]`。
+  - 补充登录邮箱阶段进度日志：查找邮箱框、命中候选、等待 Continue、等待 PayPal 接受提交都会输出进度，避免长时间静默。
+  - Continue 按钮改用 `/Continue to Payment|Continue/i`，避免 PayPal 按钮文案轻微变化时定位失败。
+- `test/test_paypal_component_fill_static.js`
+  - 更新断言，锁定邮箱提交必须验证“PayPal 已接受”，不能只看 `inputValue()`。
+
+验证：
+
+- `node --check .\index.js`：通过。
+- `node --check .\test\test_paypal_component_fill_static.js`：通过。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+- `node .\test\test_product_activator_analysis.js`：通过。
+- `git diff --check -- index.js test\test_paypal_component_fill_static.js docs\work\handoff.md docs\work\work-log.md`：通过。
+- 2026-05-22 补充静默等待日志后再次验证：`node --check .\index.js`、`node .\test\test_paypal_component_fill_static.js`、`git diff --check ...` 均通过。
+- 2026-05-22 补充 email 大小写不敏感批量写入后再次验证：`node --check .\index.js`、`node --check .\test\test_paypal_component_fill_static.js`、`node .\test\test_paypal_component_fill_static.js`、`git diff --check ...` 均通过。
+
+注意：
+
+- 当前根因判断：PayPal 邮箱框是 React 受控输入，旧逻辑只证明 DOM value 曾经写入，不能证明 PayPal 内部状态和提交动作已接受。
+- 真实链路如果再次失败，优先看 `paypal_email_submit_retry_*` 保存的 HTML/截图和日志中的 diagnostics。
+
 ## 本次任务补充：PayPal 填写流程改为组件填充
 
 目标：只改 `index.js` 的 PayPal 填写段，把 PayPal 登录邮箱和支付表单填写从模拟人工输入改为组件填充，并保留旧逻辑注释以便回滚。
@@ -17,6 +118,7 @@
   - PayPal 邮箱框不再直接调用 `locator.fill()`；改为 native value setter 写入 React 控制字段后触发 `input/change/blur`。
   - PayPal 登录邮箱不再只选第一个可见 `input#email`，而是逐个可见候选试填并校验，适配截图中 placeholder 为 `Email` 的页面。
   - PayPal 支付信息页字段改为 `paypalFieldSelectors` 候选选择器，适配当前页面中没有 `#expiryDate` 但有 `placeholder="Expiration date"` 的 DOM。
+  - 新增 `paypalFieldHints` loose 匹配：明确 selector 未命中时，扫描所有可见组件属性并小写 contains 匹配；邮箱字段只要 id/name/placeholder/aria-label/autocomplete/type 中包含 `email` 即可选中。
   - PayPal 登录邮箱改为组件填充。
   - PayPal 支付表单字段改为固定顺序组件填充/选择：
     - First Name / Last Name

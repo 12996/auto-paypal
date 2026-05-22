@@ -740,11 +740,12 @@ function validateAccessToken(token) {
 
 async function settleRunProcessAssets(storeApi, runtimeAssets, outcome = {}) {
     if (!runtimeAssets) {
-        return { cardMarked: false, cardDeleted: false, successCounted: false };
+        return { cardMarked: false, cardDeleted: false, phoneDeleted: false, successCounted: false };
     }
 
     let cardMarked = false;
     let cardDeleted = false;
+    let phoneDeleted = false;
     let successCounted = false;
 
     if (outcome.success && runtimeAssets.cardAssetId) {
@@ -769,6 +770,17 @@ async function settleRunProcessAssets(storeApi, runtimeAssets, outcome = {}) {
         } catch (err) {
             if (typeof outcome.onDeleteError === 'function') {
                 outcome.onDeleteError(err);
+            }
+        }
+    }
+
+    if (!outcome.success && outcome.deletePhone && typeof storeApi.deletePhoneAsset === 'function') {
+        try {
+            await storeApi.deletePhoneAsset(runtimeAssets.phone?.phone);
+            phoneDeleted = true;
+        } catch (err) {
+            if (typeof outcome.onDeletePhoneError === 'function') {
+                outcome.onDeletePhoneError(err);
             }
         }
     }
@@ -802,7 +814,7 @@ async function settleRunProcessAssets(storeApi, runtimeAssets, outcome = {}) {
         }
     }
 
-    return { cardMarked, cardDeleted, successCounted };
+    return { cardMarked, cardDeleted, phoneDeleted, successCounted };
 }
 
 function encodeBase64Url(input) {
@@ -1033,7 +1045,7 @@ function analyzeProcessOutput(output, timedOut) {
             message: '手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: false,
+            deletePhone: true,
             deleteCard: false
         };
     }
@@ -1046,7 +1058,7 @@ function analyzeProcessOutput(output, timedOut) {
             message: '短信异常：手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: false,
+            deletePhone: true,
             deleteCard: false
         };
     }
@@ -2478,8 +2490,10 @@ app.post('/api/run-process', async (req, res) => {
                         const settlement = await settleRunProcessAssets(store, assets, {
                             success: run?.analysis?.status === 'success',
                             deleteCard: Boolean(run?.analysis?.deleteCard),
+                            deletePhone: Boolean(run?.analysis?.deletePhone),
                             onMarkError: (err) => logTask(task.jobKey, `更新银行卡激活状态失败: ${err.message}`, 'warn'),
                             onDeleteError: (err) => logTask(task.jobKey, `禁用银行卡失败: ${err.message}`, 'warn'),
+                            onDeletePhoneError: (err) => logTask(task.jobKey, `报废手机号失败: ${err.message}`, 'warn'),
                             onIncrementError: (err) => logTask(task.jobKey, `更新资产成功计数失败: ${err.message}`, 'warn'),
                             onReleaseError: (err) => logTask(task.jobKey, `释放资产失败: ${err.message}`, 'warn')
                         }).catch((err) => {
@@ -2488,6 +2502,9 @@ app.post('/api/run-process', async (req, res) => {
                         });
                         if (settlement?.cardDeleted) {
                             logTask(task.jobKey, `🚫 [资产] 银行卡尾号 ${assets.card.number.slice(-4)} 被拒，已永久禁用 (status='已报废', is_active=0)`, 'warn');
+                        }
+                        if (settlement?.phoneDeleted) {
+                            logTask(task.jobKey, `🚫 [资产] 手机号 ${assets.phone.phone} 不可用，已永久禁用 (status='已报废', is_active=0)`, 'warn');
                         }
                         if (settlement?.cardMarked || settlement?.successCounted) {
                             finalAssetsSettled = true;

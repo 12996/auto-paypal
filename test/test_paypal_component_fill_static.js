@@ -34,9 +34,63 @@ function testPayPalUsesComponentFill() {
         'PayPal email fill should try visible email candidates until one verifies'
     );
     assert(
+        indexJs.includes('async function setAllVisiblePayPalEmailValues'),
+        'PayPal email fill should batch-fill all visible email-like inputs'
+    );
+    assert(
+        indexJs.includes("document.querySelectorAll('input, textarea').forEach(addNode)"),
+        'PayPal email fill should scan all visible inputs/textareas for email hints'
+    );
+    assert(
+        indexJs.includes("describe(node).toLowerCase().includes('email')"),
+        'PayPal email fill should match email hints case-insensitively'
+    );
+    for (const selector of [
+        'input[id*="email" i]',
+        'input[name*="email" i]',
+        'input[placeholder*="email" i]',
+        'input[aria-label*="email" i]',
+        'input[autocomplete*="email" i]'
+    ]) {
+        assert(
+            indexJs.includes(selector),
+            `PayPal email selectors should include case-insensitive fallback ${selector}`
+        );
+    }
+    assert(
+        indexJs.includes('async function submitPayPalLoginEmail'),
+        'PayPal email submit should verify that PayPal accepted the filled email'
+    );
+    assert(
+        indexJs.includes('waitForPayPalEmailSubmitAccepted'),
+        'PayPal email submit should wait for the email form to disappear or payment form to appear'
+    );
+    assert(
+        indexJs.includes('collectPayPalEmailDiagnostics'),
+        'PayPal email submit retries should collect diagnostics when the form stays on the email page'
+    );
+    assert(
         indexJs.includes('const paypalFieldSelectors'),
         'PayPal payment form should define selector fallbacks for current PayPal DOM variants'
     );
+    assert(
+        indexJs.includes('const paypalFieldHints'),
+        'PayPal payment form should define loose lowercase hints for component fallback matching'
+    );
+    assert(
+        indexJs.includes('findVisiblePayPalFieldByHints'),
+        'PayPal payment form should scan visible components by loose attribute hints'
+    );
+    assert(
+        indexJs.includes("paypalFieldHints.email"),
+        'PayPal email selection should use loose email hints'
+    );
+    for (const attribute of ['id', 'name', 'placeholder', 'aria-label', 'autocomplete']) {
+        assert(
+            indexJs.includes(`getAttribute('${attribute}')`),
+            `loose PayPal component matching should inspect ${attribute}`
+        );
+    }
     for (const selector of [
         'input[placeholder="Expiration date"]',
         'input[placeholder="CVV"]',
@@ -61,16 +115,20 @@ function testPayPalUsesComponentFill() {
     const payPalEmailBlock = between(
         indexJs,
         'console.log("📝 [步骤] 正在填写 PayPal 登录邮箱...");',
-        'const continueBtn = page.getByRole'
+        'console.log("✅ [步骤] 已提交邮箱，进入支付信息填写页。");'
     );
 
     assert(
-        payPalEmailBlock.includes('fillPayPalEmailFromVisibleCandidates(page, emailSelectors, CONFIG.billing.email)'),
-        'PayPal login email should try fillable visible candidates instead of trusting the first visible input'
+        payPalEmailBlock.includes('submitPayPalLoginEmail(page, emailSelectors, CONFIG.billing.email)'),
+        'PayPal login email should fill and verify submit instead of only trusting inputValue()'
     );
     assert(
         !payPalEmailBlock.includes('await componentFillPayPalInput(page, emailInput'),
         'PayPal login email should not fill only the first visible email input'
+    );
+    assert(
+        !payPalEmailBlock.includes("getByRole('button', { name: 'Continue to Payment' })"),
+        'PayPal login email submit should not depend on an exact Continue to Payment accessible name'
     );
 
     const bannedPatterns = [

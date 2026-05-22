@@ -346,7 +346,7 @@ function analyzeProcessOutput(output, timedOut) {
             message: '手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: false,
+            deletePhone: true,
             deleteCard: false
         };
     }
@@ -359,7 +359,7 @@ function analyzeProcessOutput(output, timedOut) {
             message: '短信异常：手机号不可用，准备重试',
             reachedPaypal,
             shouldRetry: true,
-            deletePhone: false,
+            deletePhone: true,
             deleteCard: false
         };
     }
@@ -904,11 +904,12 @@ async function runProtocolProcess(email, onProgress, runtimeJobKey = '', inboxBu
 
 async function settleActivationAssets(storeApi, runtimeAssets, outcome = {}) {
     if (!runtimeAssets) {
-        return { cardMarked: false, cardDeleted: false };
+        return { cardMarked: false, cardDeleted: false, phoneDeleted: false };
     }
 
     let cardMarked = false;
     let cardDeleted = false;
+    let phoneDeleted = false;
 
     if (outcome.success && runtimeAssets.cardAssetId) {
         try {
@@ -936,12 +937,23 @@ async function settleActivationAssets(storeApi, runtimeAssets, outcome = {}) {
         }
     }
 
+    if (!outcome.success && outcome.deletePhone && typeof storeApi.deletePhoneAsset === 'function') {
+        try {
+            await storeApi.deletePhoneAsset(runtimeAssets.phone?.phone);
+            phoneDeleted = true;
+        } catch (err) {
+            if (typeof outcome.onDeletePhoneError === 'function') {
+                outcome.onDeletePhoneError(err);
+            }
+        }
+    }
+
     await storeApi.releaseRuntimeAssets({
         phoneAssetId: runtimeAssets.phoneAssetId,
         cardAssetId: runtimeAssets.cardAssetId
     });
 
-    return { cardMarked, cardDeleted };
+    return { cardMarked, cardDeleted, phoneDeleted };
 }
 
 async function startProductCreation(cdk, progressCallback, options = {}) {
@@ -1034,7 +1046,8 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
                 let analysis;
                 let activationSucceeded = false;
                 let activationShouldDeleteCard = false;
-                let settledAssets = { cardDeleted: false };
+                let activationShouldDeletePhone = false;
+                let settledAssets = { cardDeleted: false, phoneDeleted: false };
                 try {
                     let activationProgress = 34;
                     let activationMessage = `正在激活账号，手机号 ${runtimeAssets.phone.phone}，银行卡尾号 ${cardLast4}...`;
@@ -1078,14 +1091,17 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
                     analysis = activationResult.analysis;
                     activationSucceeded = Boolean(activationResult.success);
                     activationShouldDeleteCard = Boolean(analysis?.deleteCard);
+                    activationShouldDeletePhone = Boolean(analysis?.deletePhone);
                 } finally {
                     // 先落库卡状态，再释放锁，避免并发任务抢到同一张卡。
                     settledAssets = await settleActivationAssets(store, runtimeAssets, {
                         success: activationSucceeded,
                         deleteCard: activationShouldDeleteCard,
+                        deletePhone: activationShouldDeletePhone,
                         email,
                         onMarkError: (err) => console.warn(`[Product] 更新银行卡激活状态失败: ${err.message}`),
-                        onDeleteError: (err) => console.warn(`[Product] 禁用银行卡失败: ${err.message}`)
+                        onDeleteError: (err) => console.warn(`[Product] 禁用银行卡失败: ${err.message}`),
+                        onDeletePhoneError: (err) => console.warn(`[Product] 报废手机号失败: ${err.message}`)
                     }).catch((err) => console.warn(`[Product] release runtime assets failed: ${err.message}`));
                 }
 
@@ -1219,6 +1235,9 @@ async function startProductCreation(cdk, progressCallback, options = {}) {
                         }
                         const banMsg = `🚫 [资产] 卡密 ${runtimeAssets.card.key || '(未知)'} / 银行卡尾号 ${cardToBan.slice(-4)} 被拒，已永久禁用 (status='已报废', is_active=0)`;
                         console.warn(banMsg);
+                    }
+                    if (analysis.deletePhone && settledAssets?.phoneDeleted) {
+                        console.warn(`🚫 [资产] 手机号 ${runtimeAssets.phone.phone} 不可用，已永久禁用 (status='已报废', is_active=0)`);
                     }
                     const retryMessage = analysis.message || '开通任务异常，正在重试';
                     console.warn(`[Product] Account ${email}: ${retryMessage}. Retrying same account...`);
