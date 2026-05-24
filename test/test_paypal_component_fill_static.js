@@ -14,6 +14,26 @@ function between(source, start, end) {
 
 function testPayPalUsesComponentFill() {
     assert(
+        indexJs.includes('latestCheckoutAmountText = latestAmountTexts[latestAmountTexts.length - 1]'),
+        'Stripe zero-amount check should validate the last rendered amount element'
+    );
+    assert(
+        !indexJs.includes('hasZeroAmount = latestAmountTexts.some(isZeroAmountText)'),
+        'Stripe zero-amount check should not pass when only an earlier amount element is zero'
+    );
+    assert(
+        indexJs.includes("const DEFAULT_SMS_API_PREFIX = 'https://api668.com/sms/by_key?key='"),
+        'SMS API pure keys should use the api668 by_key prefix'
+    );
+    assert(
+        indexJs.includes('function buildSmsApiUrl(rawKeyOrUrl)'),
+        'SMS API should support building a URL from a pure key'
+    );
+    assert(
+        indexJs.includes('if (/^https?:\\/\\//i.test(value)) return value'),
+        'SMS API should accept a full URL without adding another prefix'
+    );
+    assert(
         indexJs.includes('async function componentFillPayPalInput'),
         'index.js should expose a PayPal component input fill helper'
     );
@@ -117,6 +137,20 @@ function testPayPalUsesComponentFill() {
         'console.log("📝 [步骤] 正在填写 PayPal 登录邮箱...");',
         'console.log("✅ [步骤] 已提交邮箱，进入支付信息填写页。");'
     );
+    const payPalCreateAccountBlock = between(
+        indexJs,
+        'console.log("⏳ [步骤] 正在等待 PayPal 创建账户按钮出现...");',
+        'console.log("📝 [步骤] 正在填写 PayPal 登录邮箱...");'
+    );
+
+    assert(
+        payPalCreateAccountBlock.includes('正在点击 PayPal 创建账户按钮'),
+        'PayPal Create an Account click should be logged before email fill'
+    );
+    assert(
+        payPalCreateAccountBlock.includes('paypal_create_btn_click_no_effect'),
+        'PayPal Create an Account click should verify the page advanced'
+    );
 
     assert(
         payPalEmailBlock.includes('submitPayPalLoginEmail(page, emailSelectors, CONFIG.billing.email)'),
@@ -155,6 +189,18 @@ function testPayPalUsesComponentFill() {
             `PayPal component-fill block should fill ${key} through selector fallbacks`
         );
     }
+    assert(
+        payPalFillBlock.includes('const lastName = nameParts.join(\' \') || firstName'),
+        'PayPal Last Name should fall back to First Name when no last name is available'
+    );
+    assert(
+        payPalFillBlock.includes('{ selector: filledPayPalFields.firstName, expectedValue: firstName, name: "First Name" }'),
+        'PayPal pre-submit validation should recheck First Name'
+    );
+    assert(
+        payPalFillBlock.includes('{ selector: filledPayPalFields.lastName, expectedValue: lastName, name: "Last Name" }'),
+        'PayPal pre-submit validation should recheck Last Name'
+    );
     assert(
         !payPalFillBlock.includes("componentFillPayPalInput(page, page.locator('#expiryDate')"),
         'PayPal expiry should not depend on only #expiryDate'

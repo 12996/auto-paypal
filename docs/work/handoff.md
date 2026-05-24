@@ -2,6 +2,56 @@
 
 状态：active
 
+## 本次任务补充：短信平台前缀改为 api668
+
+目标：手机号池只保存短信 key 时，按用户当前短信平台 `api668.com` 拼接获取短信地址。
+
+已完成：
+
+- `index.js`
+  - 短信纯 key 的默认前缀改为 `https://api668.com/sms/by_key?key=`。
+  - 新增 `buildSmsApiUrl()`：
+    - `sms_api_key` 是纯 key：拼接 api668 前缀。
+    - `sms_api_key` 是完整 `http/https` URL：原样使用。
+  - 验证码提取改为直接匹配响应中的 6 位数字，不再依赖旧平台必须返回 `yes|`。
+- `test/test_paypal_component_fill_static.js`
+  - 增加静态回归断言。
+
+验证：
+
+- `node --check .\index.js`：通过。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+
+注意：
+
+- 未直接请求用户真实短信接口，避免泄漏当前验证码或完整接口响应。
+
+## 本次任务补充：Stripe 0 元金额校验与 PayPal 姓名回退修复
+
+目标：避免 Stripe 页面金额元素中只要任意一个为 `$0.00` 就误判为 0 元订单；PayPal Last Name 为空时使用 First Name。
+
+已完成：
+
+- `index.js`
+  - 金额校验只检查 `.CurrencyAmount` 文本列表的最后一个元素。
+  - 如果最后一个金额不是 0，报错信息输出该最后金额。
+  - PayPal 支付信息姓名拆分使用 `firstName` / `lastName`，`lastName` 为空时回退为 `firstName`。
+  - 提交 PayPal 前的数据完整性校验补充 `First Name` / `Last Name`，防止 PayPal 组件重渲染后 Last Name 变空仍继续提交。
+  - PayPal `Create an Account` 点击补充显式日志，并在点击后确认进入邮箱或支付信息阶段；未推进会重试一次并保存 `paypal_create_btn_click_no_effect`。
+- `test/test_paypal_component_fill_static.js`
+  - 增加静态回归断言，锁定最后金额元素校验、Last Name 回退、提交前姓名复查和创建账户点击推进校验逻辑。
+- `docs/memory/index_js_调用链路.md`
+  - 同步调用链路说明。
+
+验证：
+
+- `node --check .\index.js`：通过。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+
+注意：
+
+- 对于类似 `$20.00 | $20.00 | $20.00 | $20.00 | $0.00 | $20.00` 的日志，现在会失败，因为最后一个金额是 `$20.00`。
+
 ## 本次任务补充：手机号不可用时自动报废
 
 目标：当任务出现 `status=failed`、`message=手机号不可用` 或短信异常导致手机号不可用时，把本次运行手机号自动改为 `已报废`。

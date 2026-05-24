@@ -112,6 +112,13 @@ const CONFIG = {
     proxy: process.env.PROXY || ""
 };
 const DEBUG_PAYPAL_LOCALE = process.env.DEBUG_PAYPAL_LOCALE === '1' || process.env.DEBUG_PAYPAL_LOCALE === 'true';
+const DEFAULT_SMS_API_PREFIX = 'https://api668.com/sms/by_key?key=';
+
+function buildSmsApiUrl(rawKeyOrUrl) {
+    const value = String(rawKeyOrUrl || '').trim();
+    if (/^https?:\/\//i.test(value)) return value;
+    return `${DEFAULT_SMS_API_PREFIX}${encodeURIComponent(value)}`;
+}
 
 function buildPlaywrightProxy(proxyValue) {
     if (!proxyValue) return null;
@@ -841,7 +848,7 @@ async function run(options = {}) {
         const getSMSCode = async (timeout = 120000) => {
             console.log("📨 [监听] 正在等待短信验证码...");
             const start = Date.now();
-            const apiUrl = `http://a.62-us.com/api/get_sms?key=${CONFIG.billing.smsKey}`;
+            const apiUrl = buildSmsApiUrl(CONFIG.billing.smsKey);
             let consecutiveNoCode = 0;
 
             while (Date.now() - start < timeout) {
@@ -850,12 +857,10 @@ async function run(options = {}) {
                     const text = await response.text();
                     console.log(`   [短信] 接口返回: ${text}`);
 
-                    if (text.includes("yes|")) {
-                        const match = text.match(/\b(\d{6})\b/);
-                        if (match) {
-                            console.log(`✅ [短信] 验证码提取成功: ${match[1]}`);
-                            return match[1];
-                        }
+                    const match = text.match(/\b(\d{6})\b/);
+                    if (match) {
+                        console.log(`✅ [短信] 验证码提取成功: ${match[1]}`);
+                        return match[1];
                     }
 
                     if (text.includes('no|') || text.includes('暂无验证码')) {
@@ -1829,18 +1834,20 @@ async function run(options = {}) {
         const amountDeadline = Date.now() + amountWaitTimeoutMs;
         let latestAmountTexts = [];
         let hasZeroAmount = false;
+        let latestCheckoutAmountText = '';
         while (Date.now() < amountDeadline) {
             latestAmountTexts = await collectAmountTexts();
             if (latestAmountTexts.length > 0) {
-                hasZeroAmount = latestAmountTexts.some(isZeroAmountText);
+                latestCheckoutAmountText = latestAmountTexts[latestAmountTexts.length - 1] || '';
+                hasZeroAmount = isZeroAmountText(latestCheckoutAmountText);
                 if (hasZeroAmount) break;
             }
             await page.waitForTimeout(amountPollIntervalMs);
         }
         console.log(`💰 [步骤] 当前页面金额元素: ${latestAmountTexts.join(' | ') || '(空)'}`);
         if (!hasZeroAmount) {
-            const displayAmount = latestAmountTexts[0] || 'unknown';
-            throw new Error(`金额校验失败，当前金额不是 0 元: ${displayAmount}`);
+            const displayAmount = latestCheckoutAmountText || 'unknown';
+            throw new Error(`金额校验失败，最后一个金额元素不是 0 元: ${displayAmount}`);
         }
         console.log("✅ [步骤] 金额校验通过，确认是 0 元订单。");
         // Phase 3: 直奔核心 - 触发 PayPal 重定向
@@ -2841,10 +2848,35 @@ async function run(options = {}) {
         }
 
 
-        // 等 PayPal 组件完成按钮态更新后再点击。
+        // 等 PayPal 组件完成按钮态更新后再点击，并确认页面推进到邮箱/支付信息阶段。
         await page.waitForTimeout(1000);
-        const createBtn = page.getByRole('button', { name: 'Create an Account' });
-        await createBtn.click();
+        const createBtn = page.getByRole('button', { name: /Create an Account/i }).first();
+        const isPayPalEmailInputVisible = async () => hasVisiblePayPalSelector(page, [
+            'input#email',
+            'input[name="login_email"]',
+            'input[type="email"]',
+            'input[id*="email" i]',
+            'input[name*="email" i]',
+            'input[placeholder*="email" i]',
+            'input[aria-label*="email" i]',
+            'input[autocomplete*="email" i]'
+        ], 250);
+        let createAccountClicked = false;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+            console.log(`🖱️ [步骤] 正在点击 PayPal 创建账户按钮（第 ${attempt}/2 次）...`);
+            await createBtn.click({ force: true });
+            await page.waitForTimeout(1200);
+            if (await isPayPalEmailInputVisible() || await isPayPalPaymentInfoVisible(page)) {
+                createAccountClicked = true;
+                break;
+            }
+            console.warn(`⚠️ [步骤] 点击 PayPal 创建账户后未进入邮箱/支付信息页，准备重试`);
+        }
+        if (!createAccountClicked) {
+            await debug.saveOnError(page, 'paypal_create_btn_click_no_effect');
+            throw new Error(`PayPal 创建账户按钮点击后页面未进入邮箱或支付信息阶段 (URL=${page.url()})`);
+        }
+        console.log("✅ [步骤] PayPal 创建账户按钮已点击，进入后续邮箱/支付信息阶段。");
 
         // 等邮箱输入框出现
         console.log("📝 [步骤] 正在填写 PayPal 登录邮箱...");
@@ -2930,9 +2962,10 @@ async function run(options = {}) {
         console.log("📝 [步骤] 正在组件填充 PayPal 账单信息...");
 
         const billing = CONFIG.billing;
-        const nameParts = String(billing.name || '').trim().split(/\s+/).filter(Boolean);
-        const first = nameParts.shift() || billing.name || '';
-        const last = nameParts.join(' ') || first;
+        const billingName = String(billing.name || '').trim();
+        const nameParts = billingName.split(/\s+/).filter(Boolean);
+        const firstName = nameParts.shift() || billingName || '';
+        const lastName = nameParts.join(' ') || firstName;
 
         const filledPayPalFields = {};
         const fillRequiredPayPalField = async (key, value, label, options = {}) => {
@@ -2953,8 +2986,8 @@ async function run(options = {}) {
             return loc;
         };
 
-        await fillRequiredPayPalField('firstName', first, 'First Name');
-        await fillRequiredPayPalField('lastName', last, 'Last Name');
+        await fillRequiredPayPalField('firstName', firstName, 'First Name');
+        await fillRequiredPayPalField('lastName', lastName, 'Last Name');
         filledPayPalFields.cardNumber = cardLocator || filledPayPalFields.cardNumber;
         await fillRequiredPayPalField('cardNumber', billing.card, 'Card Number', { digitsMode: true });
         await fillRequiredPayPalField('expiry', billing.expiry, 'Expiry', { digitsMode: true });
@@ -3032,6 +3065,8 @@ async function run(options = {}) {
         };
 
         const checkFields = [
+            { selector: filledPayPalFields.firstName, expectedValue: firstName, name: "First Name" },
+            { selector: filledPayPalFields.lastName, expectedValue: lastName, name: "Last Name" },
             { selector: filledPayPalFields.cardNumber, expectedValue: billing.card, name: "银行卡号", digitsMode: true },
             { selector: filledPayPalFields.expiry, expectedValue: billing.expiry, name: "有效期", digitsMode: true },
             { selector: filledPayPalFields.cvc, expectedValue: billing.cvc, name: "安全码", digitsMode: true },

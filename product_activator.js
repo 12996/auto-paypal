@@ -10,7 +10,7 @@ const cardAssetRegistrar = require('./card_asset_registrar');
 
 const CONFIG = {
     MAX_ACCOUNT_RETRIES: 15,
-    MAX_ACT_RETRIES_PER_ACCOUNT: 1,
+    MAX_ACT_RETRIES_PER_ACCOUNT: 3,
     MAX_PROTOCOL_RETRIES: 2,
     MAX_TOPUP_FAILURES_BEFORE_STOP: 3,
     RETRY_DELAY_MS: 5000,

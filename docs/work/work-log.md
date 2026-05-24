@@ -1,5 +1,54 @@
 # Work Log
 
+## 2026-05-24 - 短信平台前缀改为 api668
+
+目标：修复手机号池只保存短信 key 时，程序仍按旧平台 `a.62-us.com` 拼接短信接口，导致无法从 `api668.com` 获取验证码的问题。
+
+已完成：
+
+- `index.js`
+  - 新增 `DEFAULT_SMS_API_PREFIX = 'https://api668.com/sms/by_key?key='`。
+  - 新增 `buildSmsApiUrl()`：数据库保存纯 key 时自动拼接 api668 前缀；保存完整 `http/https` URL 时直接使用，避免重复拼接。
+  - 验证码提取改为从接口响应中直接匹配 6 位数字，兼容不含 `yes|` 的响应格式。
+- `test/test_paypal_component_fill_static.js`
+  - 增加静态断言，锁定 api668 前缀和完整 URL 兼容逻辑。
+
+验证：
+
+- `node --check .\index.js`：通过。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+
+注意：
+
+- 本次没有请求用户提供的真实短信 URL，避免把当前验证码或敏感响应打到日志里。
+
+## 2026-05-24 - Stripe 0 元金额校验与 PayPal 姓名回退修复
+
+目标：修复 Stripe 金额列表中间出现 `$0.00` 时被误判为 0 元订单的问题；确认 PayPal Last Name 为空时使用 First Name。
+
+已完成：
+
+- `index.js`
+  - 金额校验从“任一金额元素为 0 即通过”改为“最后一个金额元素必须为 0 才通过”。
+  - 金额校验失败日志改为输出最后一个金额元素。
+  - PayPal 姓名拆分改为显式 `firstName` / `lastName`，`lastName` 为空时回退为 `firstName`。
+  - 提交 PayPal 前的数据完整性校验补充 `First Name` / `Last Name`，如果 Last Name 被组件重渲染清空，会在点击 `Agree & Create Account` 前重新写入。
+  - PayPal `Create an Account` 点击补充显式进度日志，并在点击后确认页面进入邮箱或支付信息阶段；若未推进会重试一次并保存调试现场。
+- `test/test_paypal_component_fill_static.js`
+  - 增加静态断言，防止金额校验回退到 `some(isZeroAmountText)`。
+  - 增加 Last Name 回退 First Name、提交前姓名复查、创建账户点击推进校验的断言。
+- `docs/memory/index_js_调用链路.md`
+  - 更新金额校验与 PayPal 姓名填写说明。
+
+验证：
+
+- `node --check .\index.js`：通过。
+- `node .\test\test_paypal_component_fill_static.js`：通过。
+
+注意：
+
+- 本次未跑真实 Stripe/PayPal 外部链路；线上验证时重点看日志中金额元素列表的最后一个值。
+
 ## 2026-05-22 - 手机号不可用时自动报废
 
 目标：当任务最终/尝试分析结果为“手机号不可用”或短信异常导致手机号不可用时，自动把本次手机号标记为 `已报废`，避免后续继续取用。

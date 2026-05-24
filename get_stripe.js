@@ -2,7 +2,7 @@
 
 const CHECKOUT_URL = 'https://chatgpt.com/backend-api/payments/checkout';
 const HOME_URL = 'https://chatgpt.com';
-const PROXY_URL = 'http://127.0.0.1:7897';
+const PROXY_URL = 'http://127.0.0.1:7891';
 
 const COOKIE_STRING = '__Host-next-auth.csrf-token=576edee1512678dc261872fbd60239f65c5f4dcc3ba2d9f8ae41c0c8619196dd%7C02c117fb21e8c0437da8186941c6f2043dcf5c613936581055687037395d5e85; __Secure-next-auth.callback-url=https%3A%2F%2Fchatgpt.com; oai-did=068455e1-4498-42fb-ad71-159b55e1a17c; oai-chat-web-route="ChExMC4xMjkuMjM3LjQ6MzAwMBCpyqUB"; __cflb=0H28vzvP5FJafnkHxih9yVdfomkZWy8bjCQawKou5Ky; _cfuvid=5IvHQoEMr1rSMWqlCFgse2ZM9.pVaBDe3ajyDebPJJg-1778807241.2676063-1.0.1.1-WbwVdYa0JuQwJGi.QWlk7BYokGwlbTv1vyQlwjsQrxg; cf_clearance=o0wYNz1kPEaPKkeOhSlda_tw6T_L7cF2QzUyzzDBtlo-1778807300-1.2.1.1-gNbHLFfS.0M99DTCpGnyUNdUnQ_EoKb1ondrkTSqfGL58WQBe7LFh5CtpiWNmpmUPmScglRQk5FHjZS2lNLYWPcx4.EsI6UTOTstbyaa3X4f3N0ilAGC0_XcAXxYZRFtOUrbTz3V82MHmY1_B_292R9LwyUxsNEVDKMeT_eHa82_WQzuyUHSY2Ebji8O5Cr41KeH3e1A7H9P1f285y79DRoW3_bEq4dfo7zF3bT_iDyBklK8sylno06AdWM.d35cabJDgNydHZkkKYAZ.FWR5pZXItBdZ81B_hLD5nzr48e5eONuXqwpIYtrlNh2cPbNbwosIfpj48nD3iS6SLckCA; __cf_bm=946OiSA5gYQH0e5ueuVA1Lo__j0v5AcgnlTg0IYx2f0-1778807298.499703-1.0.1.1-Cse4M9C4Kio01yfLAL.RATy3V0ytozErsZVhQ1f9pP_zP7h6HvSE2w1Lm6d2ZtzfMJ2g_4BIqNB5cJxNAlUlBObck2e5vM.95D4x_Y_wokHrCWAtNa14OUSpIgKM2iXW; _dd_s=aid=daac6713-cc40-4c50-b16f-a2e9da35ef2d&rum=0&expire=1778808205993&logs=1&id=eb01ecd2-1f3e-4108-b8a5-7517dc8d2de6&created=1778807305993';
 
